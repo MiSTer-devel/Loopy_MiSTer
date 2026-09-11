@@ -1,0 +1,97 @@
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/loopy_clocks.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cdc_handshake.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/loopy_loader.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/loopy_input.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/loopy_print_overlay.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/loopy_print_store.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/loopy_print_palette.sv
+set_global_assignment -name SEARCH_PATH rtl/mainboard
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mainboard/ext_mem_bridge.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mainboard/sync_xfer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mainboard/mem_line_cache.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mainboard/hm514260.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mainboard/loopy_printer.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mainboard/loopy_printer_audio.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mainboard/loopy_print_capture.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mainboard/loopy_mainboard.sv
+set_global_assignment -name SEARCH_PATH rtl/sound
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/rh7501.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/hn62434.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/cdt109_midi.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/cdt109_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/cdt109_voices.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/cdt109_seq.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/cdt109.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/upd6379.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/loopy_audio_filter.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/loopy_sound.sv
+
+set_global_assignment -name SEARCH_PATH rtl/rh7500
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_raster.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_regs.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_cpu_if.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_rdw_fwd.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_bm_vram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_tile_vram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_bitmap.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_bg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_obj.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_priority.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_blend.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_capture.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_io_ctrl.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_io_print.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_io_exp.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/rh7500.sv
+set_global_assignment -name VERILOG_FILE rtl/mem/cache_ram.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/cache_ram_be.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cart/cart_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cart/cart_sram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cart/loopy_cart_slot.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cart/cart_exp_msm6653.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cart/cart_exp_msm6653_bank.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cart/cart_exp_wanwan.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cart/cart_exp_bank_rom.sv
+set_global_assignment -name MIF_FILE rtl/cart/wanwan_bank.mif
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/sdram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/save_slot.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/mem/loopy_ddram.sv
+set_global_assignment -name SEARCH_PATH rtl/savestate
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestate/ss_reg.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestate/savestates.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestate/statemanager.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestate/savestate_ui.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestate/ss_park.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/savestate/ss_bulk.sv
+set_global_assignment -name SEARCH_PATH rtl/sh7021
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh1_decode.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh1_alu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh1_shifter.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh1_mac.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh1_regfile.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh1_core.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh7021_ibus.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh7021_bsc.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh7021_intc.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh7021_dmac.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh7021_itu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh7021_tpc.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh7021_wdt.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh7021_sci.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh7021_pfc.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh7021_ubc.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh7021_rom.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh7021_ram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sh7021/sh7021.sv
+set_global_assignment -name SYSTEMVERILOG_FILE Loopy.sv
+
+# SYNTHESIS selects the altddio_out/altddio_in I/O-cell capture path in
+# rtl/mem/sdram.sv. Quartus does not define it on its own; without it the
+# fabric-clock simulation model is synthesized instead, and CAS_READ_CYCLES
+# in sdram.sv is tuned against the I/O-cell path.
+set_global_assignment -name VERILOG_MACRO "SYNTHESIS=1"
+
+# rtl/mem/sdram.sdc derives the SDRAM_CLK pin clock from the PLL output, so it
+# must follow the core SDC that runs derive_pll_clocks.
+set_global_assignment -name SDC_FILE Loopy.sdc
+set_global_assignment -name SDC_FILE rtl/mem/sdram.sdc

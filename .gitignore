@@ -1,0 +1,67 @@
+db
+greybox_tmp
+incremental_db
+output_files
+output_files_cart_check
+output_files_sh7021_check
+simulation
+hc_output
+scaler
+hps_isw_handoff
+vip
+*_sim
+.qsys_edit
+PLLJ_PLLSPE_INFO.txt
+*.bak
+*.orig
+*.rej
+*.qdf
+*.rpt
+*.smsg
+*.summary
+*.done
+*.jdi
+*.pin
+*.sof
+*.qws
+*.ppf
+*.ddb
+build_id.v
+c5_pin_model_dump.txt
+*.sopcinfo
+*.csv
+*.f
+*.cmp
+*.sip
+*.spd
+*.bsf
+*~
+*.xml
+*_netlist
+*.cdf
+**/.DS_Store
+
+# Local research and agent control planes.
+/AGENTS.md
+/.agents/
+/CLAUDE.md
+/.claude/
+/.codex/
+/references/
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+
+# QMD local index database
+.qmd/index.sqlite*
+__pycache__
+
+# MiSTer SD-card staging: copyrighted ROM images.
+/roms/
+.agents/tools/mister/mister.local.conf
+
+# Local venv for the Wanwan bank builder (.agents/tools/wanwan-bank/README.md)
+.agents/tools/wanwan-bank/.venv/
