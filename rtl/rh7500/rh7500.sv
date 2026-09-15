@@ -910,8 +910,17 @@ module rh7500
 	// ---- video output --------------------------------------------------------
 	// The colour is a pixel behind the raster, so the position signals are
 	// delayed to match.
+	//
+	// The render pixel phase restarts at the right border, which leaves one
+	// pixel a single VDP cycle long there. The pixel enable handed out runs on
+	// a fixed grid from the line start instead, so its odd cycle falls inside
+	// hsync. Both grids agree across the render window, where 252 and 1276 are
+	// multiples of four, and anything measuring pixel length near the blanking
+	// edges only ever sees full pixels.
 
-	assign ce_pix = (blend_mode == 3'd3) ? ce_pix_half : ce_pix_1;
+	wire ce_out_1    = ce_vdp & (hcyc[1:0] == 2'd0);
+	wire ce_out_half = ce_vdp & ~hcyc[0];
+	assign ce_pix = (blend_mode == 3'd3) ? ce_out_half : ce_out_1;
 
 	reg d_hsync, d_vsync, d_hvis, d_vvis, d_hrend, d_vrend, d_render;
 	always @(posedge clk) begin
@@ -919,7 +928,7 @@ module rh7500
 			d_hsync <= 1'b0; d_vsync <= 1'b0;
 			d_hvis  <= 1'b0; d_vvis  <= 1'b0; d_render <= 1'b0;
 			d_hrend <= 1'b0; d_vrend <= 1'b0;
-		end else if (ce_pix_1) begin
+		end else if (ce_out_1) begin
 			d_hsync  <= r_hsync;
 			d_vsync  <= r_vsync;
 			d_hvis   <= r_hvisible;
@@ -948,7 +957,7 @@ module rh7500
 	// Stored but unused: the MODE, memory-control, flash-mask and capture
 	// unknowns, two raster debug bits, and the raster's own counters.
 	wire _unused = &{1'b0, mode_unk1, mode_unk2, bm_mem_unk, fill_mask_unk,
-	                 cap_unk, dbg_raster_halt, dbg_raster_reset, hcyc, vline,
+	                 cap_unk, dbg_raster_halt, dbg_raster_reset, hcyc[10:2], vline, ce_pix_half,
 	                 frame_start, r_border};
 	/* verilator lint_on UNUSEDSIGNAL */
 	// synthesis translate_on
