@@ -58,7 +58,10 @@ module sh7021_intc (
 	// as well as the latch so NMI stays at two states.
 	wire nmi_edge = nmie ? (nmi_i && !nmi_d) : (!nmi_i && nmi_d);
 
-	wire [15:0] icr = {nmi_i, 6'd0, nmie, irqs};
+	// ICR holds IRQ0S in bit 7 down to IRQ7S in bit 0.
+	wire [7:0]  irqs_icr = {irqs[0], irqs[1], irqs[2], irqs[3],
+	                        irqs[4], irqs[5], irqs[6], irqs[7]};
+	wire [15:0] icr = {nmi_i, 6'd0, nmie, irqs_icr};
 
 	// ------------------------------------------------------------- registers
 	wire [15:0] wd = pwdata_i;
@@ -247,7 +250,8 @@ module sh7021_intc (
 				8'hC6: ipre <= wmerge(ipre, wd, pbe_i);
 				8'hC7: begin
 					if (pbe_i[1]) nmie <= wd[8];
-					if (pbe_i[0]) irqs <= wd[7:0];
+					if (pbe_i[0]) irqs <= {wd[0], wd[1], wd[2], wd[3],
+					                       wd[4], wd[5], wd[6], wd[7]};
 				end
 				default: ;
 			endcase

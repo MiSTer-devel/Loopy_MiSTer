@@ -466,9 +466,7 @@ module loopy_mainboard (
 		pa_i[8]  = cart_det;           // DET, tied to VCC in every cartridge
 		pa_i[11] = 1'b1;               // board net unknown
 		pa_i[12] = irq0_sync[1];       // /IRQ0
-		// DREQ0 is low-active at the CPU and the VDP's raster signal is high
-		// while the picture is being drawn, so the request falls in blanking.
-		// Polarity is inferred, unmeasured.
+		// DREQ0/IRQ1, low while the VDP requests in blanking.
 		pa_i[13] = ~dma_sync[1];
 		pa_i[14] = irq2_sync[1];       // /IRQ2
 	end

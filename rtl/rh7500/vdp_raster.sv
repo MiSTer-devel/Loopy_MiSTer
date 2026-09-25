@@ -81,7 +81,7 @@ module vdp_raster
 
 	output wire nmi_n,        // 16-cycle low pulse, last active line, HCOUNT -84
 	output wire irq0_n,       // 16-cycle low pulse on the raster compare
-	output wire raster_dma    // DREQ0/IRQ1/PA13, per line or per frame
+	output wire raster_dma    // DREQ0/IRQ1/PA13 request, high in blanking
 );
 
 	// Restored savestate values; the ss_reg instances are at the end of the module.
@@ -281,11 +281,12 @@ module vdp_raster
 	end
 	assign irq0_n = ~(irq0_cnt != 5'd0);
 
-	// DREQ0/IRQ1/PA13. Rises where HCOUNT becomes 0 and falls where VCOUNT
-	// steps: per line it is the positive HCOUNT run, per frame it is held from
-	// the first active line to the last.
+	// DREQ0/IRQ1/PA13. The pin rises where HCOUNT becomes 0 and falls where
+	// VCOUNT steps, so it requests through blanking: per line outside the
+	// positive HCOUNT run, per frame from the last active line to the first.
+	// Disabled, the pin stays high, so enabling it in blanking is an edge.
 	wire dma_frame = v_in_active & ((vcount != 9'd0) | in_window);
-	assign raster_dma = rdma_en & (rdma_line ? (v_in_active & in_window) : dma_frame);
+	assign raster_dma = rdma_en & ~(rdma_line ? (v_in_active & in_window) : dma_frame);
 
 	// ---- savestate ----------------------------------------------------------
 

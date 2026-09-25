@@ -179,6 +179,8 @@ module sh7021_bsc (
 	wire        hit_now   = busy ? acc_hit : dram_hit;
 	wire [3:0]  dram_cols = dram_long ? 4'd2 : 4'd1;
 	wire [3:0]  dram_full = (tpc ? 4'd2 : 4'd1) + 4'd1 + dram_cols;
+	// A short-pitch write on the open row starts with one silent state.
+	wire [3:0]  dram_hit_len = dram_cols + {3'd0, we_i && !dram_long};
 
 	// States before any WAIT-driven extension, and whether WAIT is sampled.
 	reg [3:0] base_states;
@@ -190,7 +192,7 @@ module sh7021_bsc (
 		T_MPX:        begin base_states = 4'd4; sample_wait = 1'b1; end
 		T_DRAM:       begin
 			// Tp (one or two) plus Tr on a row miss, then one or two columns.
-			base_states = hit_now ? dram_cols : dram_full;
+			base_states = hit_now ? dram_hit_len : dram_full;
 			sample_wait = dram_long;
 		end
 		default: begin
@@ -412,7 +414,7 @@ module sh7021_bsc (
 
 	// CAS before RAS during a refresh, otherwise CAS in the column phase.
 	assign ras_n_o  = refreshing ? ~(cur <= (ref_len - 4'd1))
-	                : dram_active ? ~(ras_strobe || dram_col)
+	                : dram_active ? ~(ras_strobe || dram_col || hit_now)
 	                : ras_idle;
 	assign cash_n_o = refreshing ? ~(cur <= ref_len)
 	                : ~(cas_strobe && !bus8 && !cw2 && sel_hi);

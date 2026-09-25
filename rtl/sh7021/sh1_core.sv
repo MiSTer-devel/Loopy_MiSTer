@@ -491,11 +491,20 @@ module sh1_core (
 	// error, as is an odd instruction address.
 	assign if_addr_err = pc_f[0] || ((pc_f[27] == 1'b0) && (pc_f[26:24] == 3'd5));
 	assign if_hit      = fb_v && (fb_tag == pc_f[31:2]);
-	assign if_want     = !sleeping && !in_reset_seq && (id_free_next || !iq_v);
+	// IF waits while the instruction it fetched last still waits for ID. A
+	// delayed branch computing its target holds its slot instruction back
+	// the same way, so nothing past the slot is fetched.
+	wire   dbr_redirect = ex_v && (ex_spc == SP_NONE) && (ex_step == 4'd0) && br_delayed;
+	assign if_want     = !sleeping && !in_reset_seq && !iq_v && !dbr_redirect;
 	assign if_bus      = if_want && !if_hit && !if_addr_err;
 
-	wire [1:0]  if_sz   = pc_f[1] ? SZ_W : SZ_L;
-	wire [31:0] if_addr = pc_f[1] ? pc_f : {pc_f[31:2], 2'b00};
+	// Only the 32-bit on-chip ROM (area 0 in mode 2) and RAM (area 7, A27
+	// high) hand over two instructions per fetch. External spaces fetch one
+	// instruction per bus cycle.
+	wire        if_onchip = (pc_f[26:24] == 3'd0) || (pc_f[27] && (pc_f[26:24] == 3'd7));
+	wire        if_pair   = if_onchip && !pc_f[1];
+	wire [1:0]  if_sz     = if_pair ? SZ_L : SZ_W;
+	wire [31:0] if_addr   = if_pair ? {pc_f[31:2], 2'b00} : pc_f;
 
 	assign ma_bus = ma_v && ((ma_op == MA_LOAD) || (ma_op == MA_STORE));
 	// An MA that touches a multiplier still running waits for it before it
@@ -527,7 +536,7 @@ module sh1_core (
 	assign ma_dat = (do_ma && bus_ack_i) ? bus_rdata_i : ma_rdata_r;
 
 	wire [15:0] if_word = if_hit ? (pc_f[1] ? fb_data[15:0] : fb_data[31:16])
-	                             : (pc_f[1] ? bus_rdata_i[15:0] : bus_rdata_i[31:16]);
+	                             : (if_pair ? bus_rdata_i[31:16] : bus_rdata_i[15:0]);
 	wire        if_got  = if_want && !if_addr_err && (if_hit || (do_if && bus_ack_i));
 
 	// --------------------------------------------------- pipeline advance
@@ -1031,7 +1040,7 @@ module sh1_core (
 				if (set_mask) sr_i <= ex_newmask;
 
 				// ---- fetch
-				if (do_if && bus_ack_i && !pc_f[1]) begin
+				if (do_if && bus_ack_i && if_pair) begin
 					fb_v    <= 1'b1;
 					fb_tag  <= pc_f[31:2];
 					fb_data <= bus_rdata_i;
