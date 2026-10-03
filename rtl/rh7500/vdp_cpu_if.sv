@@ -53,6 +53,14 @@ module vdp_cpu_if
 	// Holds WAIT low past the count: bitmap VRAM during a flash write.
 	input  wire        stall,
 
+	// The address is one whose WAIT is counted on the CPU clock; this side
+	// then only holds WAIT for a stall.
+	input  wire        cpu_timed,
+
+	// The VDP is about to use, or is using, the bitmap VRAM for itself.
+	input  wire        bm_hold_rd,
+	input  wire        bm_hold_wr,
+
 	// Internal bus, common to every target.
 	output reg  [19:1] cpu_addr,
 	output reg  [15:0] cpu_wdata,
@@ -176,16 +184,50 @@ module vdp_cpu_if
 		else if (capture_rd) rd_latched <= 1'b1;
 	end
 
+	// Tile VRAM takes a write about every six CPU states; an access that
+	// comes sooner waits.
+	localparam [4:0] TW_GAP = 5'd14;   // clk_video
+	reg  [4:0] tw_busy;
+	always @(posedge clk) begin
+		if (reset)                  tw_busy <= 5'd0;
+		else if (cpu_wr & sel_tile) tw_busy <= TW_GAP;
+		else if (tw_busy != 5'd0)   tw_busy <= tw_busy - 5'd1;
+	end
+
+	// Set once this access has made its transfer; nothing holds it after that.
+	reg xfer;
+	always @(posedge clk) begin
+		if (reset | ~raw_acc)   xfer <= 1'b0;
+		else if (cpu_wr | cpu_rd) xfer <= 1'b1;
+	end
+
+	// A bitmap access that has not started its VRAM cycle waits while the VDP
+	// has the VRAM. WAIT is raised from the pins so the CPU sees it in time.
+	wire steal_raw = raw_acc & ~xfer
+	               & (((a[19:18] == 2'b00) & (~rd_n ? bm_hold_rd : bm_hold_wr))
+	                | ((a[19:16] == 4'h4) & (tw_busy > 5'd3)));
+	wire steal     = busy & (rd_pending | wr_pending)
+	               & ((sel_bitmap & (is_rd ? bm_hold_rd : bm_hold_wr))
+	                | (sel_tile & (tw_busy != 5'd0)));
+	wire hold      = stall | steal;
+
 	// Set once this access has had its wait, cleared when the CPU lets go.
 	reg acc_done;
 	always @(posedge clk) begin
 		if (reset)         acc_done <= 1'b0;
 		else if (!raw_acc) acc_done <= 1'b0;
-		else if (busy & (wcnt == 4'd0) & ~stall & (~is_rd | rd_latched))
+		else if (busy & (wcnt == 4'd0) & ~hold & (~is_rd | rd_latched))
 			acc_done <= 1'b1;
 	end
 
-	assign wait_n = ~(raw_acc & ~acc_done);
+	// Once stalled, WAIT holds until the access has gone through.
+	reg stalled;
+	always @(posedge clk) begin
+		if (reset || !raw_acc) stalled <= 1'b0;
+		else if (busy & hold) stalled <= 1'b1;
+	end
+
+	assign wait_n = ~(raw_acc & ~acc_done & (~cpu_timed | hold | stalled | steal_raw));
 
 	// Registered part of the access only, so it lines up with the latched
 	// target selects.
@@ -198,7 +240,7 @@ module vdp_cpu_if
 	always @(posedge clk) begin
 		if (reset)                exp_win <= 1'b0;
 		else if (acc_start)       exp_win <= 1'b1;
-		else if (busy & (wcnt == 4'd0) & ~stall & (~is_rd | rd_latched))
+		else if (busy & (wcnt == 4'd0) & ~hold & (~is_rd | rd_latched))
 			exp_win <= 1'b0;
 	end
 
@@ -247,14 +289,15 @@ module vdp_cpu_if
 		end else begin
 			if (wcnt != 4'd0) wcnt <= wcnt - 4'd1;
 			if (!acc) busy <= 1'b0;
-			if (wr_pending & ~stall) begin cpu_wr <= 1'b1; wr_pending <= 1'b0; end
-			if (rd_pending & ~stall) begin cpu_rd <= 1'b1; rd_pending <= 1'b0; end
+			if (wr_pending & ~hold) begin cpu_wr <= 1'b1; wr_pending <= 1'b0; end
+			if (rd_pending & ~hold) begin cpu_rd <= 1'b1; rd_pending <= 1'b0; end
 		end
 	end
 
 	// ---- read latch ----------------------------------------------------------
 	// Memories answer one cycle after cpu_rd, registers and IO combinationally.
-	// The latch holds the value for the next open-bus read.
+	// The latch holds the last value read for the next open-bus read; writes
+	// leave it alone.
 
 	reg [15:0] bus_latch;
 
@@ -264,8 +307,7 @@ module vdp_cpu_if
 			capture_rd <= 1'b0;
 		end else begin
 			capture_rd <= cpu_rd;
-			if (cpu_wr)                  bus_latch <= cpu_wdata;
-			else if (capture_rd & rdata_hit) bus_latch <= rdata;
+			if (capture_rd & rdata_hit) bus_latch <= rdata;
 		end
 	end
 

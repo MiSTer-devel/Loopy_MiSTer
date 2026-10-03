@@ -3,8 +3,8 @@
 // read is an 8bpp character row, two 4bpp rows or four tilemap entries.
 //
 // The real SRAM pair is single ported and shares one write enable: a CPU
-// access during rendering corrupts the render fetch (snow), and a CPU byte
-// write lands as a whole word. Both quirks are reproduced here.
+// byte write lands as a whole word, reproduced here. The snow a CPU access
+// makes in the render fetch is drawn by the background layer.
 //
 // Render port schedule, eight clk_video cycles per pixel:
 //
@@ -20,12 +20,10 @@
 module vdp_tile_vram
 (
 	input  wire clk,
-	input  wire reset,
 
 	// CPU port.
 	input  wire        cpu_sel,
 	input  wire        cpu_wr,
-	input  wire        cpu_rd,
 	input  wire [15:1] cpu_addr,
 	input  wire [15:0] cpu_wdata,
 	output wire [15:0] cpu_rdata,
@@ -72,21 +70,7 @@ module vdp_tile_vram
 
 	wire [63:0] b_q;
 
-	// Snow: a CPU memory cycle coinciding with a render fetch puts the CPU's
-	// word on the render side.
-	reg        snow;
-	reg [15:0] snow_data;
-	always @(posedge clk) begin
-		if (reset) begin
-			snow      <= 1'b0;
-			snow_data <= 16'd0;
-		end else begin
-			snow      <= cpu_sel & (cpu_wr | cpu_rd);
-			snow_data <= cpu_wr ? cpu_wdata : cpu_rdata;
-		end
-	end
-
-	assign rd_data = snow ? {4{snow_data}} : b_q;
+	assign rd_data = b_q;
 
 	wire [7:0] ss_be = 8'h80 >> ss_addr[2:0];
 	reg  [2:0] ss_lane_q;

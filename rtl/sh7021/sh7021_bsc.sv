@@ -64,6 +64,10 @@ module sh7021_bsc (
 	// cycle, including every sub-access a width conversion splits it into,
 	// holds the bus to the end.
 	output wire        hold_o,
+	// The enable ending this state takes a word off the bus.
+	output wire        rd_take_o,
+	// A CBR refresh is running: no DRAM access can start.
+	output wire        cbr_o,
 
 	// savestate scalar bus
 	input  wire [63:0] ss_din,
@@ -153,6 +157,7 @@ module sh7021_bsc (
 	// ------------------------------------------------------- state registers
 	reg        busy;
 	reg        refreshing;
+	reg [3:0]  ref_cnt;
 	reg [2:0]  sub;
 	reg [3:0]  cnt;
 	reg [31:0] rbuf;
@@ -210,8 +215,14 @@ module sh7021_bsc (
 	// --------------------------------------------------------- CBR refresh
 	// TRp, TRr, TRc, plus RLW wait states when the area 1 read pitch is long.
 	// RAS is always raised for a refresh, dropping the burst-mode row.
+	// CBR needs only RAS and CAS, so it runs beside reads of other areas. A
+	// DRAM access or external write is never held off by a pending refresh:
+	// the write strobe is also the DRAM's WE and must stay high through CBR,
+	// so the refresh starts in that access's last state and holds off the
+	// next one instead.
 	wire [3:0] ref_len   = 4'd3 + (rw[1] ? ({2'd0, rlw} + 4'd1) : 4'd0);
-	wire       ref_start = (ref_pending != 4'd0) && !busy && !refreshing;
+	wire       ref_clash = req_i && ((tgt == T_DRAM)
+	                     || (we_i && ((tgt == T_EXT) || (tgt == T_MPX))));
 
 	// ----------------------------------------------------------- sequencer
 	// The first state of an access is the one in which the request appears,
@@ -223,15 +234,17 @@ module sh7021_bsc (
 	// rather than what the previous request left behind.
 	wire [2:0] sub_cur    = busy ? sub : 3'd0;
 	wire       last_sub   = (sub_cur == (nsub - 3'd1));
-	// A queued refresh owns the bus before its first state is registered.
-	// Otherwise the half-state strobe reaches the device, then repeats when
-	// the still-pending request resumes after refresh.
-	wire       running    = req_i && !refreshing && !ref_start;
+	wire       ref_start  = (ref_pending != 4'd0) && !refreshing
+	                        && (!ref_clash || (last_state && last_sub));
+	wire       ref_block  = ref_clash && refreshing;
+	wire       running    = req_i && !ref_block;
 	wire       ext_active  = running && ((tgt == T_EXT) || (tgt == T_MPX));
 	wire       dram_active = running && (tgt == T_DRAM);
 
 	assign ack_o  = running && last_state && last_sub;
-	assign hold_o = (running && !(last_state && last_sub)) || refreshing || ref_start;
+	assign hold_o = (running && !(last_state && last_sub)) || ref_block;
+	assign rd_take_o = running && last_state && !we_i;
+	assign cbr_o     = refreshing;
 
 	// DRAM phases within one access: precharge, row, then one or two columns.
 	// On a burst hit only the columns run.
@@ -302,7 +315,8 @@ module sh7021_bsc (
 	wire bsc_reg    = periph_sel && (pa[8:5] == 4'hD) && (pa[4:1] <= 4'h9);
 	wire [3:0] rsel = pa[4:1];
 
-	assign psel_o   = periph_sel && running && (cur == 4'd1);
+	// A read selects the register from T2, where its value is taken.
+	assign psel_o   = periph_sel && running && ((cur == 4'd1) || (!we_i && (cur == 4'd2)));
 	assign paddr_o  = pa;
 	assign pwr_o    = we_i;
 	assign pbe_o    = (sz_i == SZ_B) ? (sub_addr[0] ? 2'b01 : 2'b10) : 2'b11;
@@ -328,10 +342,15 @@ module sh7021_bsc (
 
 	wire [15:0] pread = bsc_reg ? bsc_rdata : prdata_i;
 
+	// A register is read as it stands at the end of T2, so an event in T3
+	// (a count, a flag, an input capture) is not in the value read.
+	reg [15:0] pread_q;
+	always @(posedge clk_i) if (ce_i) pread_q <= pread;
+
 	// -------------------------------------------------- read data assembly
 	// The register space is 16 bits wide like an external area, so it goes
 	// through the same assembly; only the source of the word differs.
-	wire [15:0] rd_word = (tgt == T_PERIPH) ? pread : d_i;
+	wire [15:0] rd_word = (tgt == T_PERIPH) ? pread_q : d_i;
 
 	reg [31:0] next_rbuf;
 	always @* begin
@@ -413,12 +432,12 @@ module sh7021_bsc (
 	assign d_oe_o  = (ext_active || dram_col) && we_i;
 
 	// CAS before RAS during a refresh, otherwise CAS in the column phase.
-	assign ras_n_o  = refreshing ? ~(cur <= (ref_len - 4'd1))
+	assign ras_n_o  = refreshing ? ~(ref_cnt <= (ref_len - 4'd1))
 	                : dram_active ? ~(ras_strobe || dram_col || hit_now)
 	                : ras_idle;
-	assign cash_n_o = refreshing ? ~(cur <= ref_len)
+	assign cash_n_o = refreshing ? ~(ref_cnt <= ref_len)
 	                : ~(cas_strobe && !bus8 && !cw2 && sel_hi);
-	assign casl_n_o = refreshing ? ~(cur <= ref_len)
+	assign casl_n_o = refreshing ? ~(ref_cnt <= ref_len)
 	                : ~(cas_strobe && (bus8 || cw2 || sel_lo));
 
 	always @* begin
@@ -463,7 +482,7 @@ module sh7021_bsc (
 	wire [63:0] SS_BSC0_BACK = {wcr3, wcr2, wcr1, bcr};
 	wire [63:0] SS_BSC1_BACK = {rtcor, rtcnt, rtcsr, rcr, pcr, dcr};
 	wire [63:0] SS_BSC2_BACK = {1'b0, cnt, sub, row_addr, rbuf};
-	wire [63:0] SS_BSC3_BACK = {42'd0, phase2, ref_pending, ref_div,
+	wire [63:0] SS_BSC3_BACK = {38'd0, ref_cnt, phase2, ref_pending, ref_div,
 	                            row_valid, acc_hit, ras_idle, refreshing, busy};
 
 	ss_reg #(.ADDR (SSW_BSC_BASE + 0),
@@ -523,10 +542,13 @@ module sh7021_bsc (
 			ras_idle <= SS_BSC3[2]; acc_hit <= SS_BSC3[3];
 			row_valid <= SS_BSC3[4];
 			ref_div <= SS_BSC3[16:5]; ref_pending <= SS_BSC3[20:17];
+			ref_cnt <= SS_BSC3[25:22];
 		end else if (ce_i) begin
 			ref_div <= ref_div + 12'd1;
 			if (cks != 3'd0 && ref_tick) begin
-				if (rtcnt == rtcor) begin
+				// The match clears RTCNT as it happens, so the period is
+				// RTCOR counts.
+				if (rtcnt + 8'd1 == rtcor) begin
 					rtcnt    <= 8'd0;
 					rtcsr[7] <= 1'b1;
 					if (rfshe && !rmode && (ref_pending != 4'hF))
@@ -536,18 +558,7 @@ module sh7021_bsc (
 				end
 			end
 
-			if (refreshing) begin
-				if (cur > 4'd1) cnt <= cur - 4'd1;
-				else            begin refreshing <= 1'b0; busy <= 1'b0; end
-			end else if (ref_start) begin
-				// Refresh outranks the CPU and the DMAC.
-				refreshing  <= 1'b1;
-				busy        <= 1'b1;
-				cnt         <= ref_len;
-				ref_pending <= ref_pending - 4'd1;
-				ras_idle    <= 1'b1;
-				row_valid   <= 1'b0;
-			end else if (req_i) begin
+			if (running) begin
 				if (!busy) begin
 					rbuf <= 32'd0;
 					sub  <= 3'd0;
@@ -582,8 +593,20 @@ module sh7021_bsc (
 						           ? (be ? dram_cols : dram_full) : base_states;
 					end
 				end
-			end else begin
+			end else if (!req_i) begin
 				busy <= 1'b0;
+			end
+
+			if (refreshing) begin
+				if (ref_cnt > 4'd1) ref_cnt <= ref_cnt - 4'd1;
+				else                refreshing <= 1'b0;
+			end else if (ref_start) begin
+				// Refresh outranks the CPU and the DMAC for the DRAM.
+				refreshing  <= 1'b1;
+				ref_cnt     <= ref_len;
+				ref_pending <= ref_pending - 4'd1;
+				ras_idle    <= 1'b1;
+				row_valid   <= 1'b0;
 			end
 
 			// register writes take effect in the last state of the access

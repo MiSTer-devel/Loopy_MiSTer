@@ -8,7 +8,9 @@
 // One SDRAM bank per client (BA = addr[25:24]) so the open-page controller
 // keeps the cartridge and work DRAM rows open across code/data switches.
 // Clients are on clk_sys and the controller on clk_ram, four times faster off
-// the same PLL, so each port crosses through `sync_xfer`. Every port moves
+// the same PLL. The CPU's demand paths (work DRAM, cartridge) are sampled on
+// clk_ram directly; the loader, savestate and wave ROM cross through
+// `sync_xfer`. Every port moves
 // whole eight-byte lines; the loader's 16-bit words ride in the lane their
 // address selects. Priority is the controller's: p0 work DRAM (the CPU stalls
 // on it), p1 cartridge, p2 wave ROM, which reads ahead. The loader borrows p0.
@@ -132,24 +134,6 @@ module ext_mem_bridge
 		.dst_ack(p0_dst_ack), .dst_resp(p0_dout)
 	);
 
-	// ---- p1: cartridge ROM lines ------------------------------------------
-
-	wire        p1_src_busy, p1_src_done;
-	wire [63:0] p1_src_resp;
-	wire        p1_dst_valid, p1_dst_ack;
-	wire [25:0] p1_dst_data;
-
-	sync_xfer #(.WIDTH(26), .RESP_WIDTH(64)) xfer_p1
-	(
-		.src_clk(clk_sys), .src_reset(reset_sys),
-		.src_req(rom_req & ~loading),
-		.src_data(CART_BASE | {4'd0, rom_line, 3'd0}),
-		.src_busy(p1_src_busy), .src_done(p1_src_done), .src_resp(p1_src_resp),
-		.dst_clk(clk_ram), .dst_reset(reset_ram),
-		.dst_valid(p1_dst_valid), .dst_data(p1_dst_data),
-		.dst_ack(p1_dst_ack), .dst_resp(p1_dout)
-	);
-
 	// ---- p2: wave ROM lines ------------------------------------------------
 
 	wire        p2_src_busy, p2_src_done;
@@ -221,6 +205,32 @@ module ext_mem_bridge
 		end
 	end
 
+	// The cartridge's demand path, the same way: rom_line is the cache's
+	// register and holds until its next request.
+	reg         rom_req_q;
+	reg         r_valid;
+	reg  [25:0] r_addr;
+	reg  [63:0] r_dout;
+	reg         r_done_tgl;
+
+	always @(posedge clk_ram) begin
+		if (reset_ram) begin
+			rom_req_q  <= 1'b0;
+			r_valid    <= 1'b0;
+			r_done_tgl <= 1'b0;
+		end else begin
+			rom_req_q <= rom_req;
+			if (rom_req && !rom_req_q && !loading) begin
+				r_valid <= 1'b1;
+				r_addr  <= CART_BASE | {4'd0, rom_line, 3'd0};
+			end else if (r_valid && p1_in_flight && p1_ready) begin
+				r_valid    <= 1'b0;
+				r_dout     <= p1_dout;
+				r_done_tgl <= ~r_done_tgl;
+			end
+		end
+	end
+
 	assign p0_req = p0_req_q;
 	assign p1_req = p1_req_q;
 	assign p2_req = p2_req_q;
@@ -229,11 +239,10 @@ module ext_mem_bridge
 	assign p0_addr    = direct ? d_addr : p0_dst_data[97:72];
 	assign p0_din     = direct ? d_din  : p0_dst_data[71:8];
 	assign p0_byte_en = direct ? d_be   : p0_dst_data[7:0];
-	assign p1_addr    = p1_dst_data;
+	assign p1_addr    = r_addr;
 	assign p2_addr    = p2_dst_data;
 
 	assign p0_dst_ack = p0_in_flight & p0_ready;
-	assign p1_dst_ack = p1_in_flight & p1_ready;
 	assign p2_dst_ack = p2_in_flight & p2_ready;
 
 	always @(posedge clk_ram) begin
@@ -246,7 +255,7 @@ module ext_mem_bridge
 			p2_req_q     <= 1'b0;
 		end else begin
 			p0_req_q <= (direct ? d_valid : p0_dst_valid) & ~p0_in_flight;
-			p1_req_q <= p1_dst_valid & ~p1_in_flight;
+			p1_req_q <= r_valid & ~p1_in_flight;
 			p2_req_q <= p2_dst_valid & ~p2_in_flight;
 
 			if (p0_req && !p0_busy)      p0_in_flight <= 1'b1;
@@ -281,9 +290,15 @@ module ext_mem_bridge
 	assign ss_dout = p0_src_resp;
 	assign ss_done = p0_src_done & ss_own & ~loading;
 
-	assign rom_dout = p1_src_resp;
-	assign rom_busy = p1_src_busy | loading;
-	assign rom_done = p1_src_done;
+	reg r_done_seen;
+	always @(posedge clk_sys) begin
+		if (reset_sys) r_done_seen <= 1'b0;
+		else           r_done_seen <= r_done_tgl;
+	end
+
+	assign rom_dout = r_dout;
+	assign rom_busy = r_valid | loading;
+	assign rom_done = r_done_tgl ^ r_done_seen;
 
 	assign wave_dout = p2_src_resp;
 	assign wave_busy = p2_src_busy | loading;

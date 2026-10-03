@@ -10,8 +10,8 @@
 //   phase 2 high at 64, low at 77            phase 5 high at 160, low at 173
 //
 // The inputs are latched at the start of the last line the output is high.
-// In direct mode the outputs come straight from CONTROL_OUT and the input
-// registers show the live pins.
+// In direct mode the outputs come straight from CONTROL_OUT and the first
+// input byte shows the live pins; the other bytes hold their last latch.
 //
 // The mouse puts two quadrature pairs on input pins 0-3 and its buttons on 4
 // and 6. With MCNT set the pairs feed signed 12-bit counters that saturate and
@@ -126,9 +126,10 @@ module vdp_io_ctrl
 		hit   = 1'b0;
 		if (sel_in) begin
 			hit = 1'b1;
-			rdata = mode_cmode
-				? {lat[{in_idx, 1'b1}], lat[{in_idx, 1'b0}]}
-				: {ctrl_in, ctrl_in};
+			// Direct mode shows the live pins in the first byte only; the
+			// rest keep what the last matrix scan latched.
+			rdata = {lat[{in_idx, 1'b1}],
+			         (mode_cmode | (in_idx != 2'd0)) ? lat[{in_idx, 1'b0}] : ctrl_in};
 		end else if (sel_mousex) begin
 			hit = 1'b1;
 			rdata = {1'b0, ctrl_in[6], 1'b0, ctrl_in[4], dx};

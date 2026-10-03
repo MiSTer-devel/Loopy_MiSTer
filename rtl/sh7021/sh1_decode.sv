@@ -275,13 +275,14 @@ module sh1_decode (
 				             uses_mac_o = 1'b1; int_disable_o = 1'b1; end
 				8'h26: begin postinc(SZ_L, 1'b1); ma_op_o = MA_LOAD; ld_sel_o = W_PR;
 				             int_disable_o = 1'b1; end
-				// LDC.L @Rm+,SR/GBR/VBR: 5 stages, 3 states
+				// LDC.L @Rm+,SR/GBR/VBR: the manual gives 3 states, the console
+				// takes 4
 				8'h07: begin postinc(SZ_L, 1'b1); ma_op_o = MA_LOAD; ld_sel_o = W_SR;
-				             spc_o = SP_LDCL; ex_slots_o = 2'd2; int_disable_o = 1'b1; end
+				             spc_o = SP_LDCL; ex_slots_o = 2'd3; int_disable_o = 1'b1; end
 				8'h17: begin postinc(SZ_L, 1'b1); ma_op_o = MA_LOAD; ld_sel_o = W_GBR;
-				             spc_o = SP_LDCL; ex_slots_o = 2'd2; int_disable_o = 1'b1; end
+				             spc_o = SP_LDCL; ex_slots_o = 2'd3; int_disable_o = 1'b1; end
 				8'h27: begin postinc(SZ_L, 1'b1); ma_op_o = MA_LOAD; ld_sel_o = W_VBR;
-				             spc_o = SP_LDCL; ex_slots_o = 2'd2; int_disable_o = 1'b1; end
+				             spc_o = SP_LDCL; ex_slots_o = 2'd3; int_disable_o = 1'b1; end
 				// LDS Rm,MACH/MACL/PR
 				8'h0A: begin a_sel_o = A_RN; ma_op_o = MA_MACWR; mac_op_o = MACOP_LDH;
 				             uses_mac_o = 1'b1; int_disable_o = 1'b1; end

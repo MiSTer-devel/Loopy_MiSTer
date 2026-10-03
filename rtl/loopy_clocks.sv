@@ -5,15 +5,17 @@
 //   clk_sys     32.215909 MHz   the SH7021, the sound, the glue
 //
 //   ce_vdp      clk_video / 2   21.477273 MHz   exact
-//   ce_cpu_r    clk_sys   / 2   16.107955 MHz   +0.675%
-//   ce_cpu_f    the other half  16.107955 MHz   half a CPU cycle later
-//   ce_midi4m   clk_sys   / 8    4.026989 MHz   +0.675%
-//   ce_sample   accumulator     84864 Hz        exact (21.725 MHz / 256)
+//   ce_cpu_r    clk_sys * 106/213  16.032329 MHz
+//   ce_cpu_f    the other half     16.032329 MHz   half a CPU cycle later
+//   ce_midi4m   clk_sys   / 8       4.026989 MHz   +0.675%
+//   ce_sample   accumulator        84864 Hz        exact (21.725 MHz / 256)
 //
-// The CPU enables are plain dividers so a memory access always lands a fixed
-// number of CPU cycles later; the bus controller needs exact T1/T2/Tw counts.
-// One shared VCO cannot give both an exact VDP clock and 32.000 MHz, so the
-// CPU runs 0.675% fast. ce_sample alternates 379 and 380 clk_sys cycles.
+// A CPU state is two clk_sys cycles, and one state in every 106 is three:
+// the console's 16 MHz resonator measures about 16.03 MHz against the VDP
+// crystal (267,970 CPU cycles a frame), which clk_sys / 2 overshoots. Every
+// state still has its two enables, so the bus controller's T1/T2/Tw counts
+// are unchanged; the long state only gives memory more time. ce_sample
+// alternates 379 and 380 clk_sys cycles.
 //
 // pause stops every enable. mem_stall stops only the CPU and the MIDI
 // receiver, so the two ends of the serial link keep the same time. The
@@ -33,6 +35,7 @@ module loopy_clocks
 	input  wire mem_stall,
 	output wire ce_cpu_r,
 	output wire ce_cpu_f,
+	output wire ph_cpu_r,      // the cycle ce_cpu_r falls in, stalled or not
 	output wire ce_midi4m,
 	output wire ce_sample
 );
@@ -52,18 +55,38 @@ module loopy_clocks
 
 	// ---- system domain ---------------------------------------------------
 
-	// CPU clock is exactly half clk_sys, so the two phases are the two halves
-	// of the divider.
-	reg cpu_div = 1'b0;
-	assign ce_cpu_r = cpu_run & ~cpu_div;
+	// The two phases are the two halves of a divide by two. After every
+	// 106th state one clk_sys cycle is held, lengthening that state's second
+	// half.
+	localparam [6:0] CPU_LONG_EVERY = 7'd106;
+	reg       cpu_div  = 1'b0;
+	reg       cpu_hold = 1'b0;
+	reg [6:0] cpu_cnt  = 7'd0;
+	assign ph_cpu_r = ~cpu_div & ~cpu_hold;
+	assign ce_cpu_r = cpu_run & ph_cpu_r;
 	assign ce_cpu_f = cpu_run &  cpu_div;
 	always @(posedge clk_sys) begin
-		if (cpu_run) cpu_div <= ~cpu_div;
+		if (cpu_run) begin
+			if (cpu_hold) begin
+				cpu_hold <= 1'b0;
+			end else begin
+				cpu_div <= ~cpu_div;
+				if (cpu_div) begin
+					if (cpu_cnt == CPU_LONG_EVERY - 7'd1) begin
+						cpu_cnt  <= 7'd0;
+						cpu_hold <= 1'b1;
+					end else begin
+						cpu_cnt <= cpu_cnt + 7'd1;
+					end
+				end
+			end
+		end
 	end
 
 	// Drives the CDT109 receiver, whose bytes come from the SH7021 SCI running
-	// off ce_cpu_r. The two only stay in step (1024 clk_sys per bit at each
-	// end) while they stop and start together, hence cpu_run.
+	// off ce_cpu_r. The two stay within a fraction of a percent of each other
+	// (1024 and about 1029 clk_sys per bit) while they stop and start
+	// together, hence cpu_run.
 	reg [2:0] midi_div = 3'd0;
 	assign ce_midi4m = cpu_run & (midi_div == 3'd7);
 	always @(posedge clk_sys) begin

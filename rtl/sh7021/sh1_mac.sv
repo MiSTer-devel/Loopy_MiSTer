@@ -4,8 +4,9 @@
 // ten bits of MACH are real, sign extended to 32 on read, so the accumulator
 // is MACH[9:0]:MACL wrapping at bit 41. With SR.S set, MAC.W saturates MACL
 // and sets MACH bit 0 as a sticky overflow flag. The multiplier stays busy
-// three states after the last MA; a following multiplier instruction holds
-// its MA until busy clears.
+// three states after the last MA. A following multiply or MAC load may take
+// its MA in the last of them; a MAC read waits until busy clears, or after
+// MAC.W reads in the last of them.
 
 module sh1_mac (
 	input  wire        clk_i,
@@ -22,6 +23,8 @@ module sh1_mac (
 	output wire [31:0] mach_o,      // sign extended from bit 9, as read
 	output wire [31:0] macl_o,
 	output wire        busy_o,
+	output wire        last_o,      // the last busy state
+	output wire        acc_o,       // the running op is MAC.W
 
 	// savestate scalar bus
 	input  wire [63:0] ss_din,
@@ -42,9 +45,9 @@ module sh1_mac (
 	reg  [41:0] acc;
 	reg         is_mac;       // MAC.W accumulates; MULS/MULU only load MACL
 
-	assign mach_o = {{22{mach[9]}}, mach};
-	assign macl_o = macl;
 	assign busy_o = (cnt != 2'd0);
+	assign last_o = (cnt == 2'd1);
+	assign acc_o  = is_mac;
 
 	// One signed 17x17 multiply serves both signed and unsigned 16-bit forms.
 	// Its inputs are registered to keep the multiplier off the decode path;
@@ -105,6 +108,34 @@ module sh1_mac (
 	wire [32:0] sum33  = {acc[31], acc[31:0]} + {prod[31], prod};
 	wire        sat_ov = (sum33[32] != sum33[31]);
 
+	// MACH and MACL after this state, with a finishing multiply written in.
+	reg [9:0]  fin_mach;
+	reg [31:0] fin_macl;
+	always @* begin
+		fin_mach = mach;
+		fin_macl = macl;
+		if (cnt == 2'd1) begin
+			if (!is_mac) begin
+				fin_macl = prod[31:0];              // MULS.W / MULU.W
+			end else if (sat) begin
+				if (sat_ov) begin
+					fin_macl = sum33[32] ? 32'h80000000 : 32'h7FFFFFFF;
+					fin_mach = mach | 10'd1;
+				end else begin
+					fin_macl = sum33[31:0];
+				end
+			end else begin
+				fin_mach = sum42[41:32];
+				fin_macl = sum42[31:0];
+			end
+		end
+	end
+
+	// An STS in the last mm state reads the result being written.
+	wire [9:0] mach_rd = (cnt == 2'd1) ? fin_mach : mach;
+	assign mach_o = {{22{mach_rd[9]}}, mach_rd};
+	assign macl_o = (cnt == 2'd1) ? fin_macl : macl;
+
 	always @(posedge clk_i) begin
 		if (rst_i) begin
 			mach <= SS_MAC0[9:0];
@@ -118,6 +149,12 @@ module sh1_mac (
 			op_a <= SS_MAC2[15:0];
 			op_b <= SS_MAC2[31:16];
 		end else if (ce_i) begin
+			mach <= fin_mach;
+			macl <= fin_macl;
+			if (cnt != 2'd0) cnt <= cnt - 2'd1;
+			if (cnt == 2'd3) prod <= mul_full[31:0];
+
+			// A start in the last busy state follows the finishing write.
 			if (start_i) begin
 				case (op_i)
 				MACOP_CLR: begin mach <= 10'd0; macl <= 32'd0; end
@@ -129,31 +166,13 @@ module sh1_mac (
 					op_a <= mul_a_i;
 					op_b <= mul_b_i;
 					unsigned_op <= (op_i == MACOP_MULU);
-					acc  <= {mach, macl};
+					acc  <= {fin_mach, fin_macl};
 					sat  <= s_i && (op_i == MACOP_MACW);
 					is_mac <= (op_i == MACOP_MACW);
 					cnt  <= 2'd3;
 				end
 				default: ;
 				endcase
-			end else if (cnt != 2'd0) begin
-				cnt <= cnt - 2'd1;
-				if (cnt == 2'd3) prod <= mul_full[31:0];
-				if (cnt == 2'd1) begin
-					if (!is_mac) begin
-						macl <= prod[31:0];         // MULS.W / MULU.W
-					end else if (sat) begin
-						if (sat_ov) begin
-							macl <= sum33[32] ? 32'h80000000 : 32'h7FFFFFFF;
-							mach <= mach | 10'd1;
-						end else begin
-							macl <= sum33[31:0];
-						end
-					end else begin
-						mach <= sum42[41:32];
-						macl <= sum42[31:0];
-					end
-				end
 			end
 		end
 	end

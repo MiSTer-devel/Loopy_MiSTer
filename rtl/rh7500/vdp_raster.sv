@@ -79,6 +79,13 @@ module vdp_raster
 	output wire line_start,   // first cycle of a line
 	output wire frame_start,  // first cycle of a frame
 
+	// VCOUNT steps: the bitmap layers take their scroll for the next line.
+	output wire vstep,
+
+	// The VDP is about to use, or is using, the bitmap VRAM for itself.
+	output wire bm_hold_rd,
+	output wire bm_hold_wr,
+
 	output wire nmi_n,        // 16-cycle low pulse, last active line, HCOUNT -84
 	output wire irq0_n,       // 16-cycle low pulse on the raster compare
 	output wire raster_dma    // DREQ0/IRQ1/PA13 request, high in blanking
@@ -281,12 +288,44 @@ module vdp_raster
 	end
 	assign irq0_n = ~(irq0_cnt != 5'd0);
 
-	// DREQ0/IRQ1/PA13. The pin rises where HCOUNT becomes 0 and falls where
-	// VCOUNT steps, so it requests through blanking: per line outside the
-	// positive HCOUNT run, per frame from the last active line to the first.
-	// Disabled, the pin stays high, so enabling it in blanking is an edge.
-	wire dma_frame = v_in_active & ((vcount != 9'd0) | in_window);
-	assign raster_dma = rdma_en & ~(rdma_line ? (v_in_active & in_window) : dma_frame);
+	// DREQ0/IRQ1/PA13. Per line the pin is high from HCOUNT -17 of an active
+	// line to pixel 254, and requests the rest of the time. Per
+	// frame it falls where VCOUNT steps into blanking and rises where it steps
+	// to the first active line, since a level-sensed IRQ1 on it stops as line
+	// 0 begins. Disabled, the pin stays high, so enabling it in blanking is an
+	// edge.
+	wire rdma_line_hi = (hcyc >= h_window_at - 11'd68) && (hcyc < h_rborder_at - 11'd6);
+	assign raster_dma = rdma_en & ~(rdma_line ? (v_in_active & rdma_line_hi) : v_in_active);
+
+	// ---- bitmap VRAM cycles the VDP keeps -------------------------------------
+	// Each picture line opens, where HCOUNT resets, with seven of the VDP's own
+	// bitmap VRAM cycles, four VDP clocks long and twelve apart, out to about
+	// HCOUNT -63; none in vertical blanking. A CPU cycle may not start if it
+	// would run into one: a read 4 clocks ahead, a write 3. Count and spacing
+	// are fitted to measured CPU waits by position.
+	localparam int unsigned BMS_N = 7, BMS_P = 12, BMS_W = 4;
+	localparam int unsigned BMS_LRD = 4, BMS_LWR = 3;
+
+	// Clocks since HCOUNT -84, plus 16 so a lead never goes below zero.
+	wire [11:0] bm_pos = h_neg_off + 12'd16;
+	reg hold_rd_c, hold_wr_c;
+	integer st_k;
+	always @* begin
+		hold_rd_c = 1'b0;
+		hold_wr_c = 1'b0;
+		for (st_k = 0; st_k < BMS_N; st_k = st_k + 1) begin
+			if (({20'd0, bm_pos} + BMS_LRD >= 16 + st_k * BMS_P)
+			    && ({20'd0, bm_pos} < 16 + st_k * BMS_P + BMS_W))
+				hold_rd_c = 1'b1;
+			if (({20'd0, bm_pos} + BMS_LWR >= 16 + st_k * BMS_P)
+			    && ({20'd0, bm_pos} < 16 + st_k * BMS_P + BMS_W))
+				hold_wr_c = 1'b1;
+		end
+	end
+	wire bm_line = ~in_window & (v_from_active < v_active);
+	assign vstep = ce_vdp & (hcyc == h_rborder_at);
+	assign bm_hold_rd = bm_line & hold_rd_c;
+	assign bm_hold_wr = bm_line & hold_wr_c;
 
 	// ---- savestate ----------------------------------------------------------
 

@@ -6,7 +6,8 @@
 // words from it.
 //
 // The image lives in SDRAM behind mem_line_cache. A cartridge smaller than
-// the 4 MB area repeats through it (`mask_i`).
+// the 4 MB area repeats through it (`mask_i`). A miss holds the CPU only if
+// its line has not arrived by the edge that takes the word (`sample_i`).
 //
 // Dual-chip boards (Z544-1: IC104 16 Mbit then IC105 8 Mbit) use A21 as the
 // second chip's select, and IC105 repeats inside its half:
@@ -31,6 +32,7 @@ module cart_rom (
 	input  wire        split_i,       // two mask ROMs, A21 picks between them
 	input  wire [20:1] hi_mask_i,     // second chip's size, minus one
 
+	input  wire        sample_i,      // the CPU takes the word this cycle
 	output wire        stall_o,
 
 	output wire        mem_req_o,
@@ -46,7 +48,10 @@ module cart_rom (
 	wire [21:1] a_eff = (split_i & a_i[21]) ? {1'b1, a_i[20:1] & hi_mask_i}
 	                                        : (a_i & mask_i);
 
-	mem_line_cache #(.ADDR_W (22), .INDEX_W (9), .READ_ONLY (1'b1)) u_cache (
+	// A ROM read is at least three states long, so a miss usually fills
+	// before the CPU takes the word and holds nothing.
+	mem_line_cache #(.ADDR_W (22), .INDEX_W (9), .READ_ONLY (1'b1),
+	                 .LATE_STALL (1'b1)) u_cache (
 		.clk_i      (clk_i),
 		.rst_i      (rst_i),
 		.addr_i     (a_eff),
@@ -55,6 +60,7 @@ module cart_rom (
 		.be_i       (2'b11),
 		.wdata_i    (16'd0),
 		.commit_i   (1'b0),
+		.sample_i   (sample_i),
 		.rdata_o    (d_o),
 		.stall_o    (stall_o),
 		.ss_flush_i (1'b0),

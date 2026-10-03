@@ -81,11 +81,13 @@ module vdp_io_print
 	// Mux values 5 to 7 are invalid and select channel 4.
 	reg [9:0] adc_src;
 	always @* begin
+		// One console's readings; channels 3 and 4 are a cartridge's.
 		case (adc_mux)
-		3'd0:    adc_src = 10'h147;   // head thermistor, about 20 C
-		3'd1:    adc_src = 10'h1AF;   // head calibration resistor
-		3'd2:    adc_src = 10'h200;   // contrast pot at centre
-		default: adc_src = 10'h3FF;   // cartridge channels, floating high
+		3'd0:    adc_src = 10'h154;   // head thermistor
+		3'd1:    adc_src = 10'h236;   // head calibration resistor
+		3'd2:    adc_src = 10'h207;   // contrast pot
+		3'd3:    adc_src = 10'h01D;
+		default: adc_src = 10'h01B;
 		endcase
 	end
 
@@ -98,9 +100,9 @@ module vdp_io_print
 		: (adc_rate == 2'd2) ? line_start
 		:                      (line_start | half_line));
 
-	// Conversion time is undocumented; eight VDP cycles keeps the interrupt
-	// off the trigger cycle.
-	reg [3:0] adc_cnt;
+	// A conversion takes about 354 VDP cycles, measured from the trigger to
+	// its interrupt.
+	reg [8:0] adc_cnt;
 
 	always @(posedge clk) begin
 		adc_ready    <= 1'b0;
@@ -118,7 +120,7 @@ module vdp_io_print
 			motor_phase <= ss_pr[27:24];
 			head_ctrl  <= ss_pr[31:28];
 			head_data  <= ss_pr[47:32];
-			adc_cnt    <= 4'd0;
+			adc_cnt    <= 9'd0;
 			line_div   <= 2'd0;
 		end else begin
 			if (line_start) line_div <= line_div + 2'd1;
@@ -129,10 +131,10 @@ module vdp_io_print
 				sens_rjmp <= region_ntsc;
 			end
 
-			if (trig_adc | auto_tick) adc_cnt <= 4'd8;
-			else if (ce_vdp & (adc_cnt != 4'd0)) begin
-				adc_cnt <= adc_cnt - 4'd1;
-				if (adc_cnt == 4'd1) begin
+			if (trig_adc | auto_tick) adc_cnt <= 9'd354;
+			else if (ce_vdp & (adc_cnt != 9'd0)) begin
+				adc_cnt <= adc_cnt - 9'd1;
+				if (adc_cnt == 9'd1) begin
 					adc_val   <= adc_src;
 					adc_ready <= 1'b1;
 				end

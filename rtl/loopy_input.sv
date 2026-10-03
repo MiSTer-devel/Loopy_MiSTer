@@ -12,7 +12,8 @@
 //   rows 3-5 the same three rows again for P3 and P4
 //
 // Several output pins high at once or their rows together, like a real
-// switch matrix. DET is high for a pad that is plugged in.
+// switch matrix. DET is high for a pad that is plugged in. A line stays high
+// for a while after its row drops.
 //
 // Mouse. Ignores the outputs and presents the same eight bits all the time:
 // two quadrature pairs on 0-3, buttons on 4 and 6 active low, detect on 7.
@@ -21,7 +22,10 @@
 // clocks (about 670 kHz): fast enough to clear a 255-count report inside a
 // frame, slow enough for the VDP to see every edge.
 
-module loopy_input
+module loopy_input #(
+	// How long a pad line floats high after its row drops: about 250 us.
+	parameter [10:0] FLOAT_PIX = 11'd1343
+)
 (
 	input  wire clk,
 	input  wire reset,
@@ -81,6 +85,29 @@ module loopy_input
 	                  | (ctrl_out[3] ? row[3] : 8'd0)
 	                  | (ctrl_out[4] ? row[4] : 8'd0)
 	                  | (ctrl_out[5] ? row[5] : 8'd0);
+
+	// The pad only pulls its lines high, through diodes. Once the row driving
+	// a line drops, the line floats and reads high for FLOAT_PIX pixel clocks.
+	reg [10:0] float_cnt [0:7];
+	reg [7:0]  floating;
+	integer b;
+
+	always @(posedge clk) begin
+		if (reset) begin
+			floating <= 8'd0;
+			for (b = 0; b < 8; b = b + 1) float_cnt[b] <= 11'd0;
+		end else begin
+			for (b = 0; b < 8; b = b + 1) begin
+				if (matrix[b]) begin
+					floating[b]  <= 1'b1;
+					float_cnt[b] <= FLOAT_PIX;
+				end else if (ce_pix & floating[b]) begin
+					if (float_cnt[b] == 11'd0) floating[b] <= 1'b0;
+					float_cnt[b] <= float_cnt[b] - 11'd1;
+				end
+			end
+		end
+	end
 
 	// ---- mouse quadrature ----------------------------------------------------
 
@@ -152,6 +179,6 @@ module loopy_input
 
 	wire [7:0] mouse_bits = {1'b1, ~mouse_r, 1'b0, ~mouse_l, qy, qx};
 
-	assign ctrl_in = use_mouse ? mouse_bits : matrix;
+	assign ctrl_in = use_mouse ? mouse_bits : (matrix | floating);
 
 endmodule

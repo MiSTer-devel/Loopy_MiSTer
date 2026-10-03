@@ -30,6 +30,7 @@ set_global_assignment -name SEARCH_PATH rtl/rh7500
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_raster.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_regs.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_cpu_if.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_cpu_wait.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_rdw_fwd.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_bm_vram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/rh7500/vdp_tile_vram.sv

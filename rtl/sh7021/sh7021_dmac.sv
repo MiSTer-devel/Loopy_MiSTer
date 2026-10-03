@@ -21,7 +21,9 @@ module sh7021_dmac (
 
 	// internal bus master port
 	output wire        breq_o,
-	input  wire        bgnt_i,
+	/* verilator lint_off UNUSEDSIGNAL */
+	input  wire        bgnt_i,         // the unit's cycles wait for it on the bus
+	/* verilator lint_on UNUSEDSIGNAL */
 	output reg         req_o,
 	output reg  [31:0] addr_o,
 	output reg         we_o,
@@ -180,8 +182,7 @@ module sh7021_dmac (
 	reg [1:0]  st;
 	reg [1:0]  ch;
 	reg [31:0] hold;
-	// Cycle steal hands the bus back for one state after each transfer unit;
-	// burst mode keeps it.
+	// Kept for the savestate layout; no longer used.
 	reg        yield;
 
 	// Everything that reads the CHCR array is computed procedurally, since a
@@ -203,10 +204,16 @@ module sh7021_dmac (
 			r_dei[c] = chcr[c[1:0]][1] & chcr[c[1:0]][2];
 	end
 
+	// Misaligned word access by the DMAC is an address error.
+	wire dm_misaligned = r_sz[0] && (st == S_READ ? sar[ch][0] : dar[ch][0]);
+
 	// The winner is a state old by the time it can take the bus, so it is
 	// checked against the live want; otherwise the state that sets TE would
-	// run one transfer unit past the count.
-	assign breq_o = (pick_vr && want[pick_r] && !yield) || (st != S_IDLE);
+	// run one transfer unit past the count. Cycle steal lets go of the bus as
+	// a unit's last cycle ends, so the CPU gets the next access.
+	wire unit_end = (st == S_WRITE) && ack_i && !dm_misaligned;
+	assign breq_o = ((st == S_IDLE) && pick_vr && want[pick_r])
+	             || ((st != S_IDLE) && !(unit_end && !tm(ch)));
 	assign sz_o   = r_sz;
 	assign dack_o = r_dack;
 	assign dei_o  = r_dei;
@@ -227,8 +234,6 @@ module sh7021_dmac (
 		       lanes[0] ? nw[7:0]  : old[7:0]};
 	endfunction
 
-	// Misaligned word access by the DMAC is an address error.
-	wire dm_misaligned = r_sz[0] && (st == S_READ ? sar[ch][0] : dar[ch][0]);
 
 	// --------------------------------------------------------- savestate
 	// Two words per channel, then one for the arbiter and the transfer state.
@@ -325,19 +330,23 @@ module sh7021_dmac (
 			hold <= SS_HOLD[31:0]; addr_o <= SS_HOLD[63:32];
 		end else if (ce_i) begin
 			dreq_d     <= dreq_i;
-			dreq_lat   <= dreq_lat | dreq_edge;
+			// An edge counts only while its channel is armed; one from
+			// before is forgotten.
+			dreq_lat   <= (dreq_lat | dreq_edge)
+			              & {chcr[1][0] && !chcr[1][1] && enable_ok,
+			                 chcr[0][0] && !chcr[0][1] && enable_ok};
 			imia_ack_o <= 4'd0;
 			rxi_ack_o  <= 2'd0;
 			txi_ack_o  <= 2'd0;
 			pick_r     <= pick;
 			pick_vr    <= pick_v;
-			if (yield && (st == S_IDLE)) yield <= 1'b0;
+			yield      <= 1'b0;
 			if (nmi_i)      nmif <= 1'b1;
 			if (addr_err_i) ae   <= 1'b1;
 
 			case (st)
-			S_IDLE: if (pick_vr && want[pick_r] && bgnt_i && !yield) begin
-				yield  <= 1'b0;
+			// The unit starts at once; its first cycle waits for the grant.
+			S_IDLE: if (pick_vr && want[pick_r]) begin
 				ch     <= pick_r;
 				st     <= single(pick_r) ? S_WRITE : S_READ;
 				req_o  <= 1'b1;
@@ -360,7 +369,15 @@ module sh7021_dmac (
 				req_o <= 1'b0;
 				we_o  <= 1'b0;
 				st    <= S_IDLE;
-				yield <= ~tm(ch);
+				// Burst mode runs the next unit straight on.
+				if (tm(ch) && (tcr[ch] != 16'd1) && want[ch]) begin
+					req_o  <= 1'b1;
+					st     <= single(ch) ? S_WRITE : S_READ;
+					we_o   <= single(ch) && (chcr[ch][11:8] == 4'b0011);
+					addr_o <= (chcr[ch][11:8] == 4'b0011)
+					          ? adv(dar[ch], chcr[ch][15:14], step)
+					          : adv(sar[ch], chcr[ch][13:12], step);
+				end
 				sar[ch] <= adv(sar[ch], chcr[ch][13:12], step);
 				dar[ch] <= adv(dar[ch], chcr[ch][15:14], step);
 				tcr[ch] <= tcr[ch] - 16'd1;

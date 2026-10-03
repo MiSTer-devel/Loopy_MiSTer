@@ -2,7 +2,8 @@
 
 // Block-RAM line cache between a memory chip model and the shared SDRAM. A
 // miss raises `stall_o`, which freezes the CPU-domain clock enables so the CPU
-// just sees a longer bus cycle.
+// just sees a longer bus cycle; with LATE_STALL only if the line is still not
+// here when the CPU takes the word.
 //
 //   state    |<--------- one CPU state --------->|
 //   clk_sys  __/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\__/‾‾\
@@ -22,7 +23,10 @@
 module mem_line_cache #(
 	parameter int  ADDR_W    = 19,      // byte address width of the device
 	parameter int  INDEX_W   = 9,       // 2**INDEX_W lines of eight bytes
-	parameter bit  READ_ONLY = 1'b0
+	parameter bit  READ_ONLY = 1'b0,
+	// Hold the CPU only at the edge that takes the word, so a miss that is
+	// filled inside a long bus cycle costs nothing. For read-only memories.
+	parameter bit  LATE_STALL = 1'b0
 ) (
 	input  wire                clk_i,
 	input  wire                rst_i,
@@ -34,6 +38,7 @@ module mem_line_cache #(
 	input  wire [1:0]          be_i,       // {even byte, odd byte}
 	input  wire [15:0]         wdata_i,
 	input  wire                commit_i,   // one cycle: take the write
+	input  wire                sample_i,   // LATE_STALL: the CPU takes rdata_o now
 	output wire [15:0]         rdata_o,
 	output wire                stall_o,
 
@@ -65,6 +70,8 @@ module mem_line_cache #(
 	wire [1:0] lane = {be_i[0], be_i[1]};
 	wire [7:0] need = {6'd0, lane} << {woff, 1'b0};
 	wire [63:0] wdata64 = {48'd0, wdata_i[7:0], wdata_i[15:8]} << {woff, 4'd0};
+	wire [63:0] need_mask = {{8{need[7]}}, {8{need[6]}}, {8{need[5]}}, {8{need[4]}},
+	                         {8{need[3]}}, {8{need[2]}}, {8{need[1]}}, {8{need[0]}}};
 
 	// ------------------------------------------------------------- the RAMs
 	// Port A runs free off the pins. Port B belongs to the fill machine and to
@@ -126,9 +133,21 @@ module mem_line_cache #(
 		q_stale <= (pb_we_data || pb_we_meta) && (pb_addr == idx);
 	end
 
-	wire [TAG_W-1:0] a_tag     = meta_qa[META_W-1:9];
-	wire             a_fetched = meta_qa[8];
-	wire [7:0]       a_dirty   = meta_qa[7:0];
+	// A CPU write leaves port A stale for its line for two cycles. What the
+	// line now holds is kept here meanwhile, so the next access to it, such
+	// as the second word of a longword push, need not wait.
+	reg [1:0]          wr_fw_age;
+	reg [INDEX_W-1:0]  wr_fw_idx;
+	reg [META_W-1:0]   wr_fw_meta;
+	reg [63:0]         wr_fw_data;
+	wire use_fw = (wr_fw_age != 2'd0) && (wr_fw_idx == idx);
+	wire a_stale = !use_fw && (q_stale || q_pending);
+	wire [META_W-1:0] meta_a = use_fw ? wr_fw_meta : meta_qa;
+	wire [63:0]       data_a = use_fw ? wr_fw_data : data_qa;
+
+	wire [TAG_W-1:0] a_tag     = meta_a[META_W-1:9];
+	wire             a_fetched = meta_a[8];
+	wire [7:0]       a_dirty   = meta_a[7:0];
 
 	// An empty line reads back as zero, so its tag field is zero and nothing
 	// is fetched or dirty: a read of it misses, and a write into it is right
@@ -138,10 +157,10 @@ module mem_line_cache #(
 	wire addr_ok   = (addr_q == addr_i);
 	wire match     = tag_match && (we_i || read_ok);
 	wire acc_v     = acc_i && addr_ok;
-	wire hit       = (match && !q_stale && !q_pending && addr_ok)
+	wire hit       = (match && !a_stale && addr_ok)
 	               || (fwd_q && acc_v && !we_i);
 
-	wire [63:0] rd_line = fwd_q ? fwd_data : data_qa;
+	wire [63:0] rd_line = fwd_q ? fwd_data : data_a;
 	assign rdata_o = {rd_line[{woff_q, 4'd0} +: 8],
 	                  rd_line[{woff_q, 4'd0} + 5'd8 +: 8]};
 
@@ -210,17 +229,18 @@ module mem_line_cache #(
 	// If the slot's old line has dirty bytes they go into the writeback buffer
 	// in the same cycle, which wb_blocks guarantees is free; a write that finds
 	// the buffer busy waits for the fill machine.
-	wire wr_fresh = !READ_ONLY && commit_i && we_i && acc_v && !q_stale && !q_pending
+	wire wr_fresh = !READ_ONLY && commit_i && we_i && acc_v && !a_stale
 	                && !tag_match && !wb_blocks && !wr_pend;
 	reg  wr_fresh_q;
 	wire cpu_write = (wr_want && hit) || wr_fresh;
-	wire miss_now  = acc_v && !match && !q_stale && !q_pending && !wr_fresh;
+	wire miss_now  = acc_v && !match && !a_stale && !wr_fresh;
 
 	// The fresh write's own access is not held: not on the commit cycle, and
 	// not on the next one while the write lands. we_i and the unchanged
 	// address keep this from ever masking a read.
 	wire wr_open = we_i && (wr_fresh || wr_fresh_q);
-	assign stall_o  = busy || wr_pend || (acc_v && !hit && !wr_open) || (st == S_INIT);
+	assign stall_o  = LATE_STALL ? ((acc_i && sample_i && !hit) || (st == S_INIT))
+	                             : (busy || wr_pend || (acc_v && !hit && !wr_open) || (st == S_INIT));
 	assign ss_idle_o = (st == S_IDLE) && !wb_full
 	                   && (!ss_flush_i || flush_done);
 
@@ -244,6 +264,10 @@ module mem_line_cache #(
 			issued     <= 1'b0;
 			wr_pend    <= 1'b0;
 			wr_fresh_q <= 1'b0;
+			wr_fw_age  <= 2'd0;
+			wr_fw_idx  <= '0;
+			wr_fw_meta <= '0;
+			wr_fw_data <= 64'd0;
 			mem_req_o  <= 1'b0;
 			mem_we_o   <= 1'b0;
 			mem_line_o <= '0;
@@ -281,6 +305,12 @@ module mem_line_cache #(
 
 			// The write commit owns port B for its one cycle; the fill machine
 			// gives way to it.
+			// Only the CPU's own writes are forwarded; anything the fill
+			// machine does to port B falls back to waiting out the stale read.
+			if (cpu_write)                wr_fw_age <= 2'd2;
+			else if (st != S_IDLE)        wr_fw_age <= 2'd0;
+			else if (wr_fw_age != 2'd0)   wr_fw_age <= wr_fw_age - 2'd1;
+
 			if (cpu_write) begin
 				pb_addr    <= idx;
 				pb_we_data <= 1'b1;
@@ -289,11 +319,16 @@ module mem_line_cache #(
 				pb_we_meta <= 1'b1;
 				pb_meta    <= tag_match ? {tag, a_fetched, a_dirty | need}
 				                        : {tag, 1'b0, need};
+				wr_fw_idx  <= idx;
+				wr_fw_meta <= tag_match ? {tag, a_fetched, a_dirty | need}
+				                        : {tag, 1'b0, need};
+				wr_fw_data <= ((tag_match ? data_a : 64'd0) & ~need_mask)
+				            | (wdata64 & need_mask);
 				wr_pend    <= 1'b0;
 				if (wr_fresh && needs_evict) begin
 					wb_full <= 1'b1;
 					wb_line <= {a_tag, idx};
-					wb_data <= data_qa;
+					wb_data <= data_a;
 					wb_be   <= a_dirty;
 				end
 				// A write can change the victim or redirect its metadata probe.
@@ -329,13 +364,22 @@ module mem_line_cache #(
 						// Into the buffer; the CPU only waits for the fill.
 						wb_full <= 1'b1;
 						wb_line <= {a_tag, idx};
-						wb_data <= data_qa;
+						wb_data <= data_a;
 						wb_be   <= a_dirty;
 					end
-					if (we_i && !READ_ONLY)
+					if (we_i && !READ_ONLY) begin
 						st <= S_SETTLE;              // a write needs no fetch
-					else
+					end else begin
 						st <= S_FILL;
+						// Ask for the line now if the port is free.
+						if (!mem_busy_i) begin
+							issued     <= 1'b1;
+							mem_req_o  <= 1'b1;
+							mem_we_o   <= 1'b0;
+							mem_line_o <= line;
+							mem_be_o   <= 8'd0;
+						end
+					end
 				end else if (wb_full) begin
 					st <= S_WB;                      // drain, then take the miss
 				end else if (ss_flush_i && !flush_done) begin

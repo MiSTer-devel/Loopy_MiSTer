@@ -54,6 +54,7 @@ module loopy_cart_slot #(
 	input  logic [20:1]        rom_hi_mask,
 	input  logic [16:0]        sram_mask,
 
+	input  logic               rd_take,          // the CPU takes a read word this cycle
 	output logic               stall,
 	output logic               sram_dirty,
 
@@ -108,6 +109,7 @@ module loopy_cart_slot #(
 		.mask_i     (rom_mask),
 		.split_i    (rom_split),
 		.hi_mask_i  (rom_hi_mask),
+		.sample_i   (rd_take),
 		.stall_o    (stall),
 		.mem_req_o  (rom_req),
 		.mem_line_o (rom_line),

@@ -480,9 +480,10 @@ module vdp_regs
 		if (g_general) begin
 			case (woff)
 			11'h000: begin
+				// Bit 2 is kept but reads back 0.
 				hit = 1'b1;
 				rdata = {10'd0, mode_unk1, mode_cmode, mode_mcnt,
-				         mode_unk2, mode_vidh, mode_vids};
+				         1'b0, mode_vidh, mode_vids};
 			end
 			11'h001: begin hit = 1'b1; rdata = {7'd0, hcount}; end
 			11'h002: begin hit = 1'b1; rdata = {7'd0, vcount}; end

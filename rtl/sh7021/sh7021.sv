@@ -56,7 +56,13 @@ module sh7021 (
 	// The chip is at a place a savestate may stop it: the core is between
 	// instructions with nothing on the bus, and the DMAC between transfer
 	// units.
-	output wire        ss_ready
+	output wire        ss_ready,
+
+	// Not pins: the enable ending this state takes a word off the external
+	// bus, for memory models that answer during the access; and a CBR
+	// refresh is running, so no DRAM access can start.
+	output wire        rd_take_o,
+	output wire        cbr_o
 );
 	`include "sh1_defs.svh"
 	`include "ss_map.svh"
@@ -140,9 +146,10 @@ module sh7021 (
 	wire        dma_addr_err;
 	wire [3:0]  sr_mask;
 
+	// The CPU stops while the DMAC owns the internal bus.
 	sh1_core u_cpu (
 		.clk_i          (clk_i),
-		.ce_i           (ce_i),
+		.ce_i           (ce_i && !dm_gnt),
 		.rst_i          (rst),
 		.manual_rst_i   (wdt_reset ? wdt_reset_manual : ~nmi_i),
 		.bus_req_o      (cpu_req),
@@ -239,6 +246,8 @@ module sh7021 (
 		.wait_n_i   (wait_n),
 		.cmi_o      (cmi),
 		.hold_o     (bus_hold),
+		.rd_take_o  (rd_take_o),
+		.cbr_o      (cbr_o),
 		.ss_din     (ss_din),
 		.ss_addr    (ss_addr),
 		.ss_wren    (ss_wren),

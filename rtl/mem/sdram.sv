@@ -33,12 +33,17 @@ module sdram #(
 	parameter int unsigned PORT0_SIZE = 1,
 	parameter int unsigned PORT1_SIZE = 1,
 	parameter int unsigned PORT2_SIZE = 1,
-	parameter bit AUTO_REFRESH = 1'b1
+	parameter bit AUTO_REFRESH = 1'b1,
+	// Refresh while `refresh_window` is high, and elsewhere only once two are
+	// owed, instead of at the first idle slot.
+	parameter bit REFRESH_WINDOW = 1'b0
 ) (
 	input  wire        clk,
 	input  wire        reset,
 
 	input  wire        refresh,
+	// A span where the busiest port will not ask, for REFRESH_WINDOW.
+	input  wire        refresh_window,
 
 	// Debug override for the read capture pipeline. 0 uses the parameter; any
 	// other value replaces it. Sampled only while the controller is idle, so it
@@ -347,9 +352,11 @@ module sdram #(
 
 	// Refresh is tracked as small debt. Low-priority ports are blocked first
 	// as debt rises; p0 is blocked only when refresh becomes more urgent.
-	localparam logic [4:0] REFRESH_BLOCK_P2 = 5'd1;
-	localparam logic [4:0] REFRESH_BLOCK_P1 = 5'd2;
-	localparam logic [4:0] REFRESH_BLOCK_P0 = 5'd4;
+	// With a window, one or two owed is normal between windows, so blocking
+	// starts later; p0 still forces one before eight are owed.
+	localparam logic [4:0] REFRESH_BLOCK_P2 = REFRESH_WINDOW ? 5'd3 : 5'd1;
+	localparam logic [4:0] REFRESH_BLOCK_P1 = REFRESH_WINDOW ? 5'd4 : 5'd2;
+	localparam logic [4:0] REFRESH_BLOCK_P0 = REFRESH_WINDOW ? 5'd6 : 5'd4;
 	localparam logic [4:0] REFRESH_DEBT_MAX = 5'd15;
 
 	function automatic [4:0] add_refresh_debt;
@@ -486,6 +493,8 @@ module sdram #(
 	logic auto_refresh_due_q;
 	logic [4:0] refresh_debt_q;
 	logic refresh_pending_q;
+	logic refresh_behind_q;
+	logic refresh_window_q;
 	logic refresh_block_p0_q;
 	logic refresh_block_p1_q;
 	logic refresh_block_p2_q;
@@ -554,7 +563,10 @@ module sdram #(
 	wire refresh_blocks_requested_port = (refresh_block_p0 && p0_req) ||
 		(refresh_block_p1 && !p0_req && p1_req) ||
 		(refresh_block_p2 && !p0_req && !p1_req && p2_req);
-	wire refresh_service_now = refresh_pending && (refresh_idle_slot || refresh_blocks_requested_port);
+	wire refresh_service_now = refresh_pending && (REFRESH_WINDOW
+		? ((refresh_window_q && !p0_req) || (refresh_idle_slot && refresh_behind_q)
+		   || refresh_blocks_requested_port)
+		: (refresh_idle_slot || refresh_blocks_requested_port));
 
 	// The output DDIO cell drives an exact inverted copy of clk to the pad. The
 	// input DDIO cell's low-phase result samples DQ on the next rising SDRAM
@@ -663,8 +675,10 @@ module sdram #(
 		p1_accept_i = 1'b0;
 		p2_accept_i = 1'b0;
 
+		// A refresh starting in ST_IDLE outranks the grant, so the grant must
+		// not be reported taken on that clock.
 		if (accept_window) begin
-			if (state_q == ST_IDLE && grant_valid_q) begin
+			if (state_q == ST_IDLE && grant_valid_q && !refresh_go_q) begin
 				p0_accept_i = grant_q[0] && !p0_busy_q;
 				p1_accept_i = grant_q[1] && !p1_busy_q;
 				p2_accept_i = grant_q[2] && !p2_busy_q;
@@ -757,6 +771,8 @@ module sdram #(
 			refresh_block_p1_q <= 1'b0;
 			refresh_block_p2_q <= 1'b0;
 			refresh_old_q <= 1'b0;
+			refresh_behind_q <= 1'b0;
+			refresh_window_q <= 1'b0;
 			p0_from_cache_q <= 1'b0;
 			p1_from_cache_q <= 1'b0;
 			p2_from_cache_q <= 1'b0;
@@ -785,6 +801,7 @@ module sdram #(
 			// so a level raised during the power-up wait still reads as an
 			// edge when init finishes instead of being swallowed by history.
 			refresh_old_q <= init_done_q && refresh;
+			refresh_window_q <= refresh_window;
 
 			// Only between transfers: changing this mid-read would move the
 			// capture edge of a burst already in flight.
@@ -840,6 +857,7 @@ module sdram #(
 			promote_port_q <= (starve1_q >= PRIORITY_PATIENCE) ? 2'd1 : 2'd2;
 			refresh_debt_q <= refresh_debt_with_add;
 			refresh_pending_q <= (refresh_debt_with_add != 5'd0);
+			refresh_behind_q <= (refresh_debt_with_add >= 5'd2);
 			refresh_block_p0_q <= (refresh_debt_with_add >= REFRESH_BLOCK_P0);
 			refresh_block_p1_q <= (refresh_debt_with_add >= REFRESH_BLOCK_P1);
 			refresh_block_p2_q <= (refresh_debt_with_add >= REFRESH_BLOCK_P2);
@@ -1068,6 +1086,7 @@ module sdram #(
 							end
 							refresh_debt_q <= refresh_debt_after_service;
 							refresh_pending_q <= (refresh_debt_after_service != 5'd0);
+							refresh_behind_q <= (refresh_debt_after_service >= 5'd2);
 							refresh_block_p0_q <= (refresh_debt_after_service >= REFRESH_BLOCK_P0);
 							refresh_block_p1_q <= (refresh_debt_after_service >= REFRESH_BLOCK_P1);
 							refresh_block_p2_q <= (refresh_debt_after_service >= REFRESH_BLOCK_P2);
@@ -1090,6 +1109,7 @@ module sdram #(
 							end
 							refresh_debt_q <= refresh_debt_after_service;
 							refresh_pending_q <= (refresh_debt_after_service != 5'd0);
+							refresh_behind_q <= (refresh_debt_after_service >= 5'd2);
 							refresh_block_p0_q <= (refresh_debt_after_service >= REFRESH_BLOCK_P0);
 							refresh_block_p1_q <= (refresh_debt_after_service >= REFRESH_BLOCK_P1);
 							refresh_block_p2_q <= (refresh_debt_after_service >= REFRESH_BLOCK_P2);
@@ -1112,6 +1132,7 @@ module sdram #(
 							end
 							refresh_debt_q <= refresh_debt_after_service;
 							refresh_pending_q <= (refresh_debt_after_service != 5'd0);
+							refresh_behind_q <= (refresh_debt_after_service >= 5'd2);
 							refresh_block_p0_q <= (refresh_debt_after_service >= REFRESH_BLOCK_P0);
 							refresh_block_p1_q <= (refresh_debt_after_service >= REFRESH_BLOCK_P1);
 							refresh_block_p2_q <= (refresh_debt_after_service >= REFRESH_BLOCK_P2);
@@ -1128,6 +1149,7 @@ module sdram #(
 						end
 						refresh_debt_q <= refresh_debt_after_service;
 						refresh_pending_q <= (refresh_debt_after_service != 5'd0);
+						refresh_behind_q <= (refresh_debt_after_service >= 5'd2);
 						refresh_block_p0_q <= (refresh_debt_after_service >= REFRESH_BLOCK_P0);
 						refresh_block_p1_q <= (refresh_debt_after_service >= REFRESH_BLOCK_P1);
 						refresh_block_p2_q <= (refresh_debt_after_service >= REFRESH_BLOCK_P2);

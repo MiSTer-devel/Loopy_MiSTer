@@ -25,6 +25,10 @@ module rh7500
 	input  wire reset,
 	input  wire ce_vdp,       // every second clk_video
 
+	// The SH7021's clock, for the WAIT that is counted in CPU states.
+	input  wire clk_cpu,      // clk_sys
+	input  wire ce_cpu,       // one per CPU state
+
 	// Savestate scalar bus.
 	input  wire        ss_clk,      // clk_sys
 	input  wire [63:0] ss_din,
@@ -56,7 +60,8 @@ module rh7500
 	input  wire [15:0] d_i,
 	output wire [15:0] d_o,
 	output wire        d_oe,
-	output wire        wait_n,
+	output wire        wait_n,      // video side, needs synchronising
+	output wire        wait_cpu_n,  // CPU side, already on the CPU clock
 
 	// To the CPU.
 	output wire        nmi_n,
@@ -112,6 +117,23 @@ module rh7500
 	wire        fill_busy;
 	wire fill_stall = fill_busy & (sel_bitmap | sel_fill);
 
+	wire cpu_timed;
+	wire bm_hold_rd, bm_hold_wr;
+	wire vstep;
+
+	vdp_cpu_wait u_cpu_wait (
+		.clk     (clk_cpu),
+		.ce_cpu  (ce_cpu),
+		.cs_n    (cs_n),
+		.rd_n    (rd_n),
+		.wrh_n   (wrh_n),
+		.wrl_n   (wrl_n),
+		.a       (a[19:16]),
+		.bm_fast (bm_fast),
+		.timed   (cpu_timed),
+		.wait_n  (wait_cpu_n)
+	);
+
 	vdp_cpu_if u_cpu (
 		.clk        (clk),
 		.reset      (reset),
@@ -127,6 +149,9 @@ module rh7500
 		.wait_n     (wait_n),
 		.bm_fast    (bm_fast),
 		.stall      (fill_stall),
+		.cpu_timed  (cpu_timed),
+		.bm_hold_rd (bm_hold_rd),
+		.bm_hold_wr (bm_hold_wr),
 		.cpu_addr   (cpu_addr),
 		.cpu_wdata  (cpu_wdata),
 		.cpu_be     (cpu_be),
@@ -333,6 +358,9 @@ module rh7500
 		.border       (r_border),
 		.line_start   (line_start),
 		.frame_start  (frame_start),
+		.vstep        (vstep),
+		.bm_hold_rd   (bm_hold_rd),
+		.bm_hold_wr   (bm_hold_wr),
 		.nmi_n        (nmi_n),
 		.irq0_n       (irq0_n),
 		.raster_dma   (raster_dma)
@@ -425,10 +453,8 @@ module rh7500
 
 	vdp_tile_vram u_tilevram (
 		.clk          (clk),
-		.reset        (reset),
 		.cpu_sel      (sel_tile),
 		.cpu_wr       (cpu_wr),
-		.cpu_rd       (cpu_rd),
 		.cpu_addr     (cpu_addr[15:1]),
 		.cpu_wdata    (cpu_wdata),
 		.cpu_rdata    (tile_cpu_rdata),
@@ -623,6 +649,7 @@ module rh7500
 		.ss_rst     (ss_rst),
 		.ss_dout    (ss_bitmap),
 		.line_start (line_start),
+		.vstep      (vstep),
 		.fill_y     (fill_y),
 		.disp_y     (vcount),
 		.disp_x     (disp_x),
@@ -655,6 +682,8 @@ module rh7500
 		.reset      (reset),
 		.phase      (phase),
 		.fetch_x    (fetch_x),
+		.snow_ev    ((cpu_wr | cpu_rd) & sel_tile & r_fetch),
+		.snow_x     (hcount[4:0]),
 		.fetch_y    (fetch_y),
 		.bg0_tsz    (bg0_tsz),
 		.bg1_tsz    (bg1_tsz),
@@ -733,6 +762,26 @@ module rh7500
 
 	wire [14:0] screen_a_col, blended_col;
 
+	// A CPU palette read during the picture takes the port the lookup uses:
+	// the pixel being drawn comes out in the colour it read.
+	reg        pal_snow_rd, pal_snow;
+	reg [14:0] pal_snow_col;
+	always @(posedge clk) begin
+		if (reset) begin
+			pal_snow_rd  <= 1'b0;
+			pal_snow     <= 1'b0;
+			pal_snow_col <= 15'd0;
+		end else begin
+			pal_snow_rd <= cpu_rd & sel_pal & r_render;
+			if (pal_snow_rd) begin
+				pal_snow     <= 1'b1;
+				pal_snow_col <= pal_cpu_q[14:0];
+			end else if (phase == 3'd7) begin
+				pal_snow     <= 1'b0;
+			end
+		end
+	end
+
 	vdp_blend u_blend (
 		.clk          (clk),
 		.reset        (reset),
@@ -751,6 +800,8 @@ module rh7500
 		.screen_b_col (screen_b_col),
 		.in_render    (r_render),
 		.render_dis   (dbg_render_dis),
+		.snow_hit     (pal_snow),
+		.snow_col     (pal_snow_col),
 		.color        (rgb),
 		.screen_a     (screen_a_col),
 		.blended      (blended_col)

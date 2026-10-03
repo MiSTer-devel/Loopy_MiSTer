@@ -38,6 +38,8 @@ module vdp_blend
 
 	input  wire       in_render,   // inside the picture
 	input  wire       render_dis,  // VIDEO_DEBUG RD
+	input  wire       snow_hit,    // a CPU palette read took this pixel's lookup
+	input  wire [14:0] snow_col,   // and the colour it read
 
 	output reg  [14:0] color,      // to the video output, settled at phase 7
 	output wire [14:0] screen_a,   // the two screens as they stand, for capture
@@ -65,7 +67,7 @@ module vdp_blend
 	wire [14:0] in_a = screen_a_en ? show_a : 15'd0;
 	wire [14:0] in_b = screen_b_en ? show_b : 15'd0;
 
-	assign screen_a = in_a;
+	assign screen_a = snow_hit ? snow_col : in_a;
 
 	// Per-channel add or subtract with sign, optional halve, then clamp.
 	function automatic [4:0] mix (input [4:0] x, input [4:0] y,
@@ -91,9 +93,9 @@ module vdp_blend
 
 	// The over modes test the raw index, so a screen showing only its backdrop
 	// is transparent, as is a screen that is switched off. SBCOL turns all of
-	// screen B into backdrop, so under mode 4 it leaves screen A alone.
+	// screen B into its backdrop colour, which then counts as drawn.
 	wire drew_a = screen_a_en & (q_ia != 8'd0);
-	wire drew_b = screen_b_en & ~screen_b_col & (q_ib != 8'd0);
+	wire drew_b = screen_b_en & (screen_b_col | (q_ib != 8'd0));
 
 	reg [14:0] mixed;
 	always @* begin
@@ -107,9 +109,11 @@ module vdp_blend
 		endcase
 	end
 
+	wire [14:0] out_mix = snow_hit ? snow_col : mixed;
+
 	// Capture mode 0 takes the blended output; in hi-res that is screen B alone.
 	wire hires = (blend_mode == 3'd3);
-	assign blended = hires ? in_b : mixed;
+	assign blended = hires ? in_b : out_mix;
 
 	// The border takes screen A's backdrop, and render disable turns the whole
 	// picture into the same thing.
@@ -129,7 +133,7 @@ module vdp_blend
 			c_half_b <= 15'd0;
 			c_hires  <= 1'b0;
 		end else if (phase == 3'd7) begin
-			c_norm   <= show_pic ? mixed : border_col;
+			c_norm   <= show_pic ? out_mix : border_col;
 			c_half_a <= show_pic ? in_a  : border_col;
 			c_half_b <= show_pic ? in_b  : border_col;
 			c_hires  <= show_pic & hires;

@@ -24,6 +24,10 @@ module vdp_bg
 
 	input  wire [2:0] phase,
 	input  wire [7:0] fetch_x,    // picture column this fetch is aimed at
+
+	// A CPU tile VRAM access during the picture, and the pixel on screen.
+	input  wire       snow_ev,
+	input  wire [4:0] snow_x,
 	input  wire [8:0] fetch_y,    // picture line, VCOUNT
 
 	// BG_CTRL.
@@ -169,6 +173,42 @@ module vdp_bg
 	wire [5:0] sel_c = 6'd7 - {3'd0, chr_sel[0]};
 	wire [5:0] sel_d = 6'd7 - {3'd0, chr_sel[1]};
 
+	// ---- snow -----------------------------------------------------------------
+	// A CPU access that meets one of BG0's own fetches makes it read zero, so
+	// the pixels it would have drawn come out transparent. Per tile, counted in
+	// pixels from where the CPU access lands, by its place in the scrolled
+	// 8-pixel grid:
+	//
+	//   0      the next tile's tilemap entry: the whole tile
+	//   1      the next tile's first 4-pixel word
+	//   4      its second word
+	//   others nothing
+	//
+	// Masked columns are kept modulo 32, well ahead of the fetch.
+	reg  [31:0] snow0;
+	wire [2:0]  s_ph = snow_x[2:0] + scroll[2:0];
+	reg  [4:0]  s_lo;
+	reg  [7:0]  s_run;
+	always @* begin
+		s_lo  = 5'd0;
+		s_run = 8'h00;
+		case (s_ph)
+		3'd0: begin s_lo = snow_x[4:0] + 5'd8; s_run = 8'hFF; end
+		3'd1: begin s_lo = snow_x[4:0] + 5'd7; s_run = 8'h0F; end
+		3'd4: begin s_lo = snow_x[4:0] + 5'd8; s_run = 8'h0F; end
+		default: ;
+		endcase
+	end
+	wire [63:0] s_rot  = {56'd0, s_run} << s_lo;
+	wire [31:0] s_set  = snow_ev ? (s_rot[31:0] | s_rot[63:32]) : 32'd0;
+	wire [31:0] s_take = (phase == 3'd6) ? (32'd1 << fetch_x[4:0]) : 32'd0;
+	wire        snowed = snow0[fetch_x[4:0]];
+
+	always @(posedge clk) begin
+		if (reset) snow0 <= 32'd0;
+		else       snow0 <= (snow0 | s_set) & ~s_take;
+	end
+
 	always @(posedge clk) begin
 		if (reset) begin
 			desc[0] <= 16'd0; desc[1] <= 16'd0;
@@ -193,7 +233,10 @@ module vdp_bg
 			if (phase == 3'd5) chr_byte[0] <= rd_data[sel_c * 6'd8 +: 8];
 			if (phase == 3'd6) chr_byte[1] <= rd_data[sel_d * 6'd8 +: 8];
 
-			if (phase == 3'd6) begin pix0 <= layer_pix[0]; scrn0 <= layer_scrn[0]; end
+			if (phase == 3'd6) begin
+				pix0  <= snowed ? 8'd0 : layer_pix[0];
+				scrn0 <= layer_scrn[0];
+			end
 			if (phase == 3'd7) begin pix1 <= layer_pix[1]; scrn1 <= layer_scrn[1]; end
 		end
 	end

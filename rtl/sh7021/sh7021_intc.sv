@@ -182,8 +182,6 @@ module sh7021_intc (
 	wire       win_req   = win[KW-1];
 	wire [4:0] win_level = win[KW-2:6];
 	wire [5:0] win_idx   = ~win[5:0];
-	wire       win_ok    = win_req && ((win_level == 5'd16)
-	                                   || (win_level > {1'b0, sr_mask_i}));
 
 	reg [7:0] src_vector_r;
 	always @(win_idx) src_vector_r = src_vector({26'd0, win_idx});
@@ -193,10 +191,12 @@ module sh7021_intc (
 	reg [3:0]  acc_level;
 	reg [7:0]  acc_vec;
 
-	assign req_o    = acc_v;
+	// The winner is registered, but it is held against the mask as SR stands
+	// now, so a mask the CPU has just opened lets it in straight away.
+	assign req_o    = acc_v && ((acc_idx == 6'd0) || (acc_level > sr_mask_i));
 	assign vec_o    = acc_vec;
 	assign level_o  = acc_level;
-	assign irqout_o = ~acc_v;
+	assign irqout_o = ~req_o;
 
 	// --------------------------------------------------------- savestate
 	/* verilator lint_off UNUSEDSIGNAL */
@@ -271,7 +271,7 @@ module sh7021_intc (
 					irq_pend[k] <= ~irq_i[k];
 				end
 			end
-			acc_v     <= win_ok;
+			acc_v     <= win_req;
 			acc_idx   <= win_idx;
 			acc_level <= (win_level == 5'd16) ? 4'd15 : win_level[3:0];
 			acc_vec   <= src_vector_r;

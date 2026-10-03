@@ -2,7 +2,7 @@
 //
 // A write to TRIGGER with CAP set arms one capture of the line at
 // CAPTURE_CTRL.YCAP. The buffer fills pixel by pixel as that line is drawn
-// and `ready` pulses at the start of the next line.
+// and `ready` pulses as its last pixel goes in.
 //
 //   mode 0    blended output, 15bpp, 512 bytes
 //   mode 1    screen A, 15bpp
@@ -77,14 +77,12 @@ module vdp_capture
 		end else begin
 			if (trig_cap) armed <= 1'b1;
 
-			if (line_start) begin
-				if (running) begin
-					running <= 1'b0;
-					armed   <= 1'b0;
-					ready   <= 1'b1;      // the line is in the buffer
-				end else if (armed && on_line) begin
-					running <= 1'b1;
-				end
+			if (line_start && !running && armed && on_line)
+				running <= 1'b1;
+			if (take && (disp_x == 8'd255)) begin
+				running <= 1'b0;
+				armed   <= 1'b0;
+				ready   <= 1'b1;
 			end
 		end
 	end

@@ -87,6 +87,7 @@ module hm514260 (
 		.be_i       ({~cash_n_i, ~casl_n_i}),
 		.wdata_i    (d_i),
 		.commit_i   (cas_fall & acc & we),
+		.sample_i   (1'b0),
 		.rdata_o    (d_o),
 		.stall_o    (stall_o),
 		.ss_flush_i (ss_flush_i),

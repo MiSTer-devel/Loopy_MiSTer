@@ -33,6 +33,7 @@ module vdp_bitmap
 	output wire [63:0] ss_dout,
 
 	input  wire        line_start,
+	input  wire        vstep,      // VCOUNT steps; the scroll is taken here
 	input  wire [8:0]  fill_y,     // VCOUNT of the line being prepared
 	input  wire [8:0]  disp_y,     // VCOUNT of the line being shown
 	input  wire [7:0]  disp_x,     // pixel being composed, presented at phase 0
@@ -115,8 +116,17 @@ module vdp_bitmap
 
 	// ---- per-layer register slices for the layer being filled ----------------
 
-	wire [8:0] f_scrollx = scrollx[flayer*9 +: 9];
-	wire [8:0] f_scrolly = scrolly[flayer*9 +: 9];
+	// The scroll for the line being prepared is taken where VCOUNT steps to
+	// the line before it, so a later write reaches the line after.
+	reg  [35:0] scrollx_q, scrolly_q;
+	always @(posedge clk) begin
+		if (reset | vstep) begin
+			scrollx_q <= scrollx;
+			scrolly_q <= scrolly;
+		end
+	end
+	wire [8:0] f_scrollx = scrollx_q[flayer*9 +: 9];
+	wire [8:0] f_scrolly = scrolly_q[flayer*9 +: 9];
 	wire [8:0] f_posy    = posy[flayer*9 +: 9];
 	wire [7:0] f_endx    = endx[flayer*8 +: 8];
 	wire [7:0] f_endy    = endy[flayer*8 +: 8];

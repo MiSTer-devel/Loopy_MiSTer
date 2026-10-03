@@ -128,6 +128,7 @@ module sh1_core (
 	reg         in_reset_seq;
 	reg         manual_rst;      // reset type latched at the reset itself
 	reg         dae_pend;
+	reg         dae_next;   // stack the instruction next in ID, not dae_pc
 	reg  [31:0] dae_pc;
 	reg         dmae_pend, dmae_d;
 
@@ -136,7 +137,7 @@ module sh1_core (
 	wire        ma_addr_err, mac_stall;
 	wire        if_hit, if_want, if_addr_err;
 	wire [31:0] ma_dat;
-	wire        mac_busy;
+	wire        mac_busy, mac_last, mac_acc;
 	wire [31:0] mach, macl;
 	wire        take_exc;
 	// Declared early because the exception arbitration below reads them.
@@ -180,7 +181,7 @@ module sh1_core (
 	wire [63:0] SS_CPU9_BACK = {ma_wdata, ma_addr};
 	wire [63:0] SS_CPU10_BACK = {seq_t1, seq_t0};
 	wire [63:0] SS_CPU11_BACK = {dae_pc, ma_rdata_r};
-	wire [63:0] SS_CPU12_BACK = {42'd0, dmae_d, dmae_pend, dae_pend,
+	wire [63:0] SS_CPU12_BACK = {41'd0, dae_next, dmae_d, dmae_pend, dae_pend,
 	                             in_reset_seq, mac_busy_d, sleeping,
 	                             int_block, ph, ma_v, ex_dslot, ex_v, iq_v,
 	                             id_dslot, id_v, sr_i, sr_q, sr_m, sr_s, sr_t};
@@ -340,7 +341,7 @@ module sh1_core (
 	wire [31:0] ma_mac_wdata = (ma_op == MA_LOAD) ? ma_dat : ma_wdata;
 	wire [15:0] mac_a = (ma_mac_op == MACOP_MACW) ? seq_t0[15:0] : ma_wdata[15:0];
 	wire [15:0] mac_b = (ma_mac_op == MACOP_MACW) ? ma_dat[15:0] : ma_opb;
-	wire        mac_start = ce_i & slot_done & ma_v & ma_mac_go;
+	wire        mac_start;
 
 	sh1_mac u_mac (
 		.clk_i   (clk_i),
@@ -355,6 +356,8 @@ module sh1_core (
 		.mach_o  (mach),
 		.macl_o  (macl),
 		.busy_o  (mac_busy),
+		.last_o  (mac_last),
+		.acc_o   (mac_acc),
 		.ss_din  (ss_din),
 		.ss_addr (ss_addr),
 		.ss_wren (ss_wren),
@@ -495,8 +498,17 @@ module sh1_core (
 	// delayed branch computing its target holds its slot instruction back
 	// the same way, so nothing past the slot is fetched.
 	wire   dbr_redirect = ex_v && (ex_spc == SP_NONE) && (ex_step == 4'd0) && br_delayed;
-	assign if_want     = !sleeping && !in_reset_seq && !iq_v && !dbr_redirect;
-	assign if_bus      = if_want && !if_hit && !if_addr_err;
+	// RTE's target comes off the stack, so nothing past its slot is fetched
+	// while the pops run. An interrupt or address error sequence overruns
+	// by the one fetch made in its ID slot and no more.
+	wire   rte_redirect = ex_v && (ex_spc == SP_RTE) && id_v && (ex_step != ex_hold);
+	wire   exc_redirect = ex_v && (ex_spc == SP_EXC) && (ex_step != ex_hold);
+	// TAS.B keeps the bus from its first slot to its write, so only the
+	// other half of a fetched pair can follow it in.
+	wire   tas_hold     = ex_v && (ex_spc == SP_TAS) && (ex_step != ex_hold);
+	assign if_want     = !sleeping && !in_reset_seq && !iq_v && !dbr_redirect
+	                     && !rte_redirect && !exc_redirect;
+	assign if_bus      = if_want && !if_hit && !if_addr_err && !tas_hold;
 
 	// Only the 32-bit on-chip ROM (area 0 in mode 2) and RAM (area 7, A27
 	// high) hand over two instructions per fetch. External spaces fetch one
@@ -511,7 +523,13 @@ module sh1_core (
 	// starts (the manual's extended M--A). It is held off the bus because
 	// STS.L takes the data the multiplier is still computing.
 	assign do_ma  = (ph == 1'b0) && ma_bus && !mac_stall;
-	assign do_if  = ((ph == 1'b1) || ((ph == 1'b0) && !ma_bus)) && if_bus;
+	// The fetch may use the bus while the MA waits on the multiplier; its
+	// word is held until the slot ends.
+	reg         if_early;
+	reg  [31:0] if_early_data;
+	assign do_if  = ((ph == 1'b1) || ((ph == 1'b0) && (!ma_bus || mac_stall)))
+	                && if_bus && !if_early;
+	wire [31:0] if_rdata = if_early ? if_early_data : bus_rdata_i;
 
 	// STS.L MACH/MACL,@-Rn takes its data from the multiplier in the MA stage,
 	// the same stage the producing LDS or multiply writes it in, so a value
@@ -527,17 +545,33 @@ module sh1_core (
 	assign bus_wdata_o  = ma_sd;
 	assign bus_ifetch_o = do_if;
 
-	assign mac_stall  = ma_v && ma_uses_mac
-	                 && (mac_busy || (ma_mac_extra && mac_busy_d));
+	// A multiply or MAC load may overlap the last mm state; a read may not.
+	// After a MAC.W, STS reads in the last mm state; after a multiply, a state
+	// later.
+	wire mac_wait     = ma_v && ma_uses_mac
+	                 && (ma_mac_go ? (mac_busy && !mac_last)
+	                               : ((mac_busy && !(mac_last && mac_acc && !ma_mac_extra))
+	                                  || (ma_mac_extra && mac_busy_d)));
+	// A multiply that had to wait for the one before hands its operands over
+	// in that one's last mm state, then leaves MA a state later.
+	reg  mul_waited, mul_taken;
+	wire mul_hold     = ma_v && (ma_op == MA_MUL) && mul_waited && !mul_taken;
+	assign mac_stall  = mac_wait && !mul_taken;
 	wire ma_half_done = !ma_bus || (ph == 1'b1) || (do_ma && bus_ack_i);
-	wire if_half_done = !if_bus || (do_if && bus_ack_i);
-	assign slot_done  = ma_half_done && if_half_done && !mac_stall;
+	wire if_half_done = !if_bus || if_early || (do_if && bus_ack_i);
+	assign slot_done  = ma_half_done && if_half_done && !mac_stall && !mul_hold;
+	// MAC.W's multiplier starts with its second read, even when a fetch in
+	// the same slot holds the slot open.
+	assign mac_start  = ce_i && ma_v && ma_mac_go && !mul_taken
+	                 && (slot_done || (mul_hold && !mac_stall)
+	                     || ((ma_mac_op == MACOP_MACW) && do_ma && bus_ack_i));
 
 	assign ma_dat = (do_ma && bus_ack_i) ? bus_rdata_i : ma_rdata_r;
 
 	wire [15:0] if_word = if_hit ? (pc_f[1] ? fb_data[15:0] : fb_data[31:16])
-	                             : (if_pair ? bus_rdata_i[31:16] : bus_rdata_i[15:0]);
-	wire        if_got  = if_want && !if_addr_err && (if_hit || (do_if && bus_ack_i));
+	                             : (if_pair ? if_rdata[31:16] : if_rdata[15:0]);
+	wire        if_got  = if_want && !if_addr_err
+	                      && (if_hit || if_early || (do_if && bus_ack_i));
 
 	// --------------------------------------------------- pipeline advance
 	wire       ex_last    = (ex_step == ex_hold);
@@ -585,10 +619,14 @@ module sh1_core (
 	// fetched behind it is neither decoded nor allowed to raise anything.
 	wire ex_to_sleep = ex_v && (ex_spc == SP_SLEEP) && ex_last;
 
-	// A data address error stops the instruction behind it from starting, so
-	// the address the error stacks really is the next one to run.
+	// A stack or vector access inside an exception sequence.
+	wire in_exc_seq  = (ex_spc == SP_EXC) || (ex_spc == SP_TRAPA)
+	                || (ex_spc == SP_RESET);
+
+	// A data address error lets the instruction behind it finish, as the
+	// console does; in a delay slot or an exception sequence it stops it.
 	assign id_adv = id_v && ex_free && !load_use && !sleeping && !in_reset_seq
-	                && !ex_to_sleep && !ma_addr_err;
+	                && !ex_to_sleep && !(ma_addr_err && (ex_dslot || in_exc_seq));
 	assign id_free_next = id_adv || !id_v;
 
 	// ------------------------------------------------ exception arbitration
@@ -598,7 +636,11 @@ module sh1_core (
 	// delayed branch and its slot instruction; both wait for the instruction
 	// after the slot.
 	wire in_dslot  = id_v && id_dslot;
-	wire int_ready = int_req_i && !int_block && !id_dslot;
+	// A request is taken only if it was already there when the instruction in
+	// ID got there, or SR was written since; SLEEP wakes on the live request.
+	reg  int_req_s, sr_wrote;
+	wire int_ready = int_req_i && (int_req_s || sr_wrote || sleeping)
+	                 && !int_block && !id_dslot;
 
 	// A fetch that cannot happen because the address is illegal raises the
 	// address error instead of stalling the pipeline for ever.
@@ -608,21 +650,30 @@ module sh1_core (
 	// exception is taken from the edge: one error, one exception.
 	wire dmae_edge  = dma_addr_err_i && !dmae_d;
 	wire xc_dmaerr  = dmae_pend && !in_dslot;
-	wire xc_fetch   = (fetch_err || dae_pend) && !in_dslot;
+	wire xc_fetch   = (fetch_err || (dae_pend && (!dae_next || id_v))) && !in_dslot;
 	wire xc_int     = int_ready;
 	wire xc_illegal = id_v && !id_dslot && !dec_legal;
 	wire xc_slot    = id_v &&  id_dslot && (!dec_legal || dec_rewrites_pc);
 
 	wire xc_any = xc_dmaerr || xc_fetch || xc_int || xc_illegal || xc_slot;
 
+	// An interrupt replaces the instruction in ID, so it need not wait out
+	// that instruction's load-use stall, unless the load is to R15, which
+	// the stacking reads.
+	wire int_past_lu = xc_int && !(ex_ld_gpr && (ex_ld_reg == 4'd15));
+
 	// Nothing is accepted in the slot that rewrites the PC: ID holds either
 	// an instruction the branch is discarding or the delay slot, and an
 	// exception against either would stack the wrong return address.
+	// Waking from SLEEP on an interrupt takes the console four more states.
+	reg  [2:0] wake_cnt;
+	wire       wake_ok = (wake_cnt == 3'd4);
+
 	assign take_exc = ex_free && !in_reset_seq && !ex_to_sleep
 	               && !pc_load && !set_dslot
-	               && ((sleeping && (xc_int || xc_dmaerr))
+	               && ((sleeping && ((xc_int && wake_ok) || xc_dmaerr))
 	                || (!sleeping && (xc_fetch || xc_dmaerr
-	                                  || (id_v && !load_use && xc_any))));
+	                                  || (id_v && (!load_use || int_past_lu) && xc_any))));
 
 	reg [2:0]  xc_kind;
 	reg [7:0]  xc_vec;
@@ -637,7 +688,7 @@ module sh1_core (
 		else                begin xc_kind = XC_ILLEGAL; xc_vec = 8'd4;  end
 
 		if (sleeping)            xc_pc = sleep_pc;
-		else if (dae_pend)       xc_pc = dae_pc;
+		else if (dae_pend)       xc_pc = dae_next ? id_pc : dae_pc;
 		else if (fetch_err)      xc_pc = pc_f;
 		else if (xc_slot)        xc_pc = id_dtarget;
 		else                     xc_pc = id_pc;
@@ -691,8 +742,6 @@ module sh1_core (
 	// A stack or vector access inside an exception sequence keeps that
 	// sequence's saved PC, and one raised while an address error is itself
 	// stacking is ignored, which stops an endless chain on a misaligned SP.
-	wire in_exc_seq  = (ex_spc == SP_EXC) || (ex_spc == SP_TRAPA)
-	                || (ex_spc == SP_RESET);
 	wire in_exc_addr = (ex_spc == SP_EXC)
 	                && ((ex_exc_kind == XC_ADDR) || (ex_exc_kind == XC_DMAERR));
 	wire [7:0] logmem_b  = (ex_lop == LOP_OR)  ? (seq_t0[7:0] | ex_imm[7:0])
@@ -861,15 +910,18 @@ module sh1_core (
 				nma_addr = rn_val - 32'd4; nma_wdata = ex_pc;
 				set_mask = (ex_exc_kind == XC_INT);
 			end
-			4'd4: begin
-				nma_v = 1'b1; nma_op = MA_LOAD; nma_sz = SZ_L;
-				nma_addr = vbr + {22'd0, ex_vec, 2'b00}; nma_to_seq = 1'b1;
-			end
-			// The handler's first fetch is the slot after the last EX: eight
-			// states after an interrupt or address error sequence started,
-			// which with the priority decision is the manual's 10 or 11.
-			default: if (ex_step == ex_hold) begin
-				pc_load = 1'b1; pc_new = seq_t0; flush_id = 1'b1;
+			// The handler's first fetch shares the slot of the last EX: eight
+			// states after the ID slot of an interrupt or address error
+			// sequence, the manual's 5 + m1 + m2 + m3. The nine-stage
+			// instruction exceptions read the vector one slot sooner.
+			default: begin
+				if (ex_step == ex_hold - 4'd3) begin
+					nma_v = 1'b1; nma_op = MA_LOAD; nma_sz = SZ_L;
+					nma_addr = vbr + {22'd0, ex_vec, 2'b00}; nma_to_seq = 1'b1;
+				end
+				if (ex_step == ex_hold - 4'd1) begin
+					pc_load = 1'b1; pc_new = seq_t0; flush_id = 1'b1;
+				end
 			end
 		endcase
 		// ---------------------------------------------------------- reset
@@ -981,6 +1033,7 @@ module sh1_core (
 			ex_dslot <= SS_CPU12[12];
 			ma_v <= SS_CPU12[13];
 			ph <= SS_CPU12[14];
+			if_early <= 1'b0;
 			int_block <= SS_CPU12[15];
 			sleeping <= SS_CPU12[16];
 			mac_busy_d <= SS_CPU12[17];
@@ -988,19 +1041,44 @@ module sh1_core (
 			dae_pend <= SS_CPU12[19];
 			dmae_pend <= SS_CPU12[20];
 			dmae_d <= SS_CPU12[21];
+			dae_next <= SS_CPU12[22];
 			// NMI's level while RES is low picks the reset type, so it is
 			// taken once rather than sampled through the vector reads.
 			manual_rst <= manual_rst_i;
+			mul_waited <= 1'b0;
+			mul_taken  <= 1'b0;
+			int_req_s  <= 1'b0;
+			sr_wrote   <= 1'b0;
+			wake_cnt   <= 3'd0;
 		end else if (ce_i) begin
+			wake_cnt <= !(sleeping && int_req_i) ? 3'd0
+			          : wake_ok ? wake_cnt : wake_cnt + 3'd1;
+			if (slot_done) begin
+				if (!id_v || id_adv) int_req_s <= int_req_i;
+				sr_wrote  <= (ma_wb && (ma_ld_sel == W_SR))
+				             || (ex_wr_en && (ex_wr_tgt == W_SR));
+			end
 			mac_busy_d <= mac_busy;
+			if (slot_done) begin
+				mul_waited <= 1'b0;
+				mul_taken  <= 1'b0;
+			end else begin
+				if (mac_stall && ma_v && (ma_op == MA_MUL)) mul_waited <= 1'b1;
+				if (mac_start) mul_taken <= 1'b1;
+			end
 			dmae_d     <= dma_addr_err_i;
 			if (dmae_edge) dmae_pend <= 1'b1;
 			if (do_ma && bus_ack_i) ma_rdata_r <= bus_rdata_i;
 
 			if (!slot_done) begin
 				if (do_ma && bus_ack_i && if_bus) ph <= 1'b1;
+				if (do_if && bus_ack_i) begin
+					if_early      <= 1'b1;
+					if_early_data <= bus_rdata_i;
+				end
 			end else begin
 				ph <= 1'b0;
+				if_early <= 1'b0;
 
 				// ---- writeback of the MA that ran in this slot
 				if (ma_wb) begin
@@ -1040,24 +1118,27 @@ module sh1_core (
 				if (set_mask) sr_i <= ex_newmask;
 
 				// ---- fetch
-				if (do_if && bus_ack_i && if_pair) begin
+				if (((do_if && bus_ack_i) || if_early) && if_pair) begin
 					fb_v    <= 1'b1;
 					fb_tag  <= pc_f[31:2];
-					fb_data <= bus_rdata_i;
+					fb_data <= if_rdata;
 				end
 
-				// ---- MA stage load. A misaligned access is held back; its
-				// address error is taken once the instruction has finished and
-				// stacks the next instruction (in a delay slot, the target).
+				// ---- MA stage load. A misaligned access still goes out,
+				// aligned down. Its address error is taken once the next
+				// instruction has finished, stacking the one after (in a delay
+				// slot, the target).
 				if (ma_addr_err && !in_exc_addr) begin
 					dae_pend <= 1'b1;
-					dae_pc   <= in_exc_seq ? ex_pc
-					          : ex_dslot   ? ex_dtarget : ex_pc + 32'd2;
+					dae_next <= !(in_exc_seq || ex_dslot);
+					dae_pc   <= in_exc_seq ? ex_pc : ex_dtarget;
 				end
-				ma_v         <= nma_v && !ma_addr_err;
+				ma_v         <= nma_v;
 				ma_op        <= nma_op;
 				ma_sz        <= nma_sz;
-				ma_addr      <= nma_addr;
+				ma_addr      <= ma_addr_err
+				              ? {nma_addr[31:2], (nma_sz == SZ_W) & nma_addr[1], 1'b0}
+				              : nma_addr;
 				ma_wdata     <= nma_wdata;
 				ma_opb       <= nma_opb;
 				ma_ld_sel    <= nma_ld_sel;
@@ -1141,6 +1222,7 @@ module sh1_core (
 					int_block   <= 1'b0;
 					sleeping    <= 1'b0;
 					dae_pend    <= 1'b0;
+					dae_next    <= 1'b0;
 					if (xc_kind == XC_DMAERR) dmae_pend <= dmae_edge;
 				end else if (id_adv && !flush_id) begin
 					ex_v        <= 1'b1;

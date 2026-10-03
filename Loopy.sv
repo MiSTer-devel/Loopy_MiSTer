@@ -296,8 +296,9 @@ wire reset_sys   = rst_sys_q[1];
 wire reset_video = rst_video_q[1];
 wire reset_ram   = rst_ram_q[1];
 
-wire ce_vdp, ce_cpu_r, ce_cpu_f, ce_midi4m, ce_sample;
+wire ce_vdp, ce_cpu_r, ce_cpu_f, ph_cpu_r, ce_midi4m, ce_sample;
 wire mem_stall;
+wire cbr_refresh;
 
 loopy_clocks clocks
 (
@@ -310,6 +311,7 @@ loopy_clocks clocks
 	.mem_stall   (mem_stall),
 	.ce_cpu_r    (ce_cpu_r),
 	.ce_cpu_f    (ce_cpu_f),
+	.ph_cpu_r    (ph_cpu_r),
 	.ce_midi4m   (ce_midi4m),
 	.ce_sample   (ce_sample)
 );
@@ -417,6 +419,7 @@ loopy_mainboard mainboard
 	.reset_sys        (reset_sys),
 	.ce_cpu_r         (ce_cpu_r),
 	.ce_cpu_f         (ce_cpu_f),
+	.ph_cpu_r         (ph_cpu_r),
 	.ce_4m            (ce_midi4m),
 	.ce_sample        (ce_sample),
 	.clk_video        (clk_video),
@@ -466,6 +469,7 @@ loopy_mainboard mainboard
 	.p2_ready         (p2_ready),
 
 	.mem_stall        (mem_stall),
+	.cbr_refresh      (cbr_refresh),
 
 	.ce_pix           (ce_pix),
 	.rgb              (rgb),
@@ -946,12 +950,15 @@ sdram #(
 	.DQ_CAPTURE_PIPELINE (3),
 	.PORT0_SIZE  (3),   // 64-bit: work DRAM lines and the loader
 	.PORT1_SIZE  (3),   // 64-bit: cartridge ROM lines
-	.PORT2_SIZE  (3)    // 64-bit: wave ROM lines
+	.PORT2_SIZE  (3),   // 64-bit: wave ROM lines
+	// Refresh inside the SH7021's own CBR refresh, when work DRAM is quiet.
+	.REFRESH_WINDOW (1'b1)
 ) sdram_i
 (
 	.clk        (clk_ram),
 	.reset      (reset_ram),
 	.refresh    (1'b0),
+	.refresh_window (cbr_refresh),
 	.dq_pipe_sel (3'd0),
 
 	.p0_req     (p0_req),

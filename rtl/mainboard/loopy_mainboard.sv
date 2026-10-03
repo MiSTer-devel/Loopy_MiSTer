@@ -34,6 +34,7 @@ module loopy_mainboard (
 	input  wire        reset_sys,
 	input  wire        ce_cpu_r,        // one per SH7021 state, already frozen
 	input  wire        ce_cpu_f,        // by mem_stall and the savestate pause
+	input  wire        ph_cpu_r,        // ce_cpu_r's cycle, before that freeze
 	input  wire        ce_4m,           // RH-7501 X201, the MIDI receiver
 	input  wire        ce_sample,       // X202 / 256, one output sample
 	input  wire        clk_video,
@@ -90,6 +91,9 @@ module loopy_mainboard (
 
 	// Back to loopy_clocks: hold the CPU while a memory model is waiting.
 	output wire        mem_stall,
+	// The SH7021 is running a CBR refresh: work DRAM is quiet, so the SDRAM
+	// can refresh without holding it.
+	output wire        cbr_refresh,
 
 	// Video, straight out of the RH-7500.
 	output wire        ce_pix,
@@ -168,6 +172,8 @@ module loopy_mainboard (
 	wire        exp_aout_en;
 
 
+	wire        cpu_rd_take;
+
 	sh7021 u_cpu (
 		.clk_i         (clk_sys),
 		.ce_i          (ce_cpu_r),
@@ -203,7 +209,9 @@ module loopy_mainboard (
 		.ss_ram_we     (ssb_ram_we),
 		.ss_ram_din    (ssb_ram_wdata),
 		.ss_ram_dout   (ssb_ram_q),
-		.ss_ready      (ss_cpu_ready)
+		.ss_ready      (ss_cpu_ready),
+		.rd_take_o     (cpu_rd_take),
+		.cbr_o         (cbr_refresh)
 	);
 
 	// A bus pin the pin function controller has not handed to the bus is an
@@ -259,7 +267,7 @@ module loopy_mainboard (
 
 	// -------------------------------------------------------- the RH-7500
 	wire [15:0] vdp_d;
-	wire        vdp_d_oe, vdp_wait_n;
+	wire        vdp_d_oe, vdp_wait_n, vdp_wait_cpu_n;
 	wire        vdp_nmi_n, vdp_irq0_n, vdp_irq2_n, vdp_raster_dma;
 	wire [2:0]  exp_strobe_n;
 	/* verilator lint_off UNUSEDSIGNAL */
@@ -277,6 +285,8 @@ module loopy_mainboard (
 		.clk          (clk_video),
 		.reset        (reset_video),
 		.ce_vdp       (ce_vdp),
+		.clk_cpu      (clk_sys),
+		.ce_cpu       (ce_cpu_r),
 		.ss_clk       (clk_sys),
 		.ss_din       (ss_din),
 		.ss_addr      (ss_addr),
@@ -301,6 +311,7 @@ module loopy_mainboard (
 		.d_o          (vdp_d),
 		.d_oe         (vdp_d_oe),
 		.wait_n       (vdp_wait_n),
+		.wait_cpu_n   (vdp_wait_cpu_n),
 		.nmi_n        (vdp_nmi_n),
 		.irq0_n       (vdp_irq0_n),
 		.irq2_n       (vdp_irq2_n),
@@ -399,6 +410,8 @@ module loopy_mainboard (
 	wire nmi_n_s = nmi_sync[1];
 
 	// ---------------------------------------------------- the cartridge
+	// The cartridge ROM holds the CPU only at the edge that takes its word.
+	wire        cart_rd_take = cpu_rd_take & ph_cpu_r;
 	wire [15:0] cart_d;
 	wire        cart_d_oe, cart_stall;
 	wire        cart_rom_req;
@@ -423,6 +436,7 @@ module loopy_mainboard (
 		.rom_split      (cart_rom_split),
 		.rom_hi_mask    (cart_rom_hi_mask),
 		.sram_mask      (cart_sram_mask),
+		.rd_take        (cart_rd_take),
 		.stall          (cart_stall),
 		.sram_dirty     (sram_dirty),
 		.rom_req        (cart_rom_req),
@@ -462,7 +476,7 @@ module loopy_mainboard (
 	// the four pins the VDP owns and DET.
 	always @* begin
 		pa_i     = 16'hFFFF;
-		pa_i[3]  = wait_sync[1];       // /WAIT
+		pa_i[3]  = wait_sync[1] & vdp_wait_cpu_n; // /WAIT
 		pa_i[8]  = cart_det;           // DET, tied to VCC in every cartridge
 		pa_i[11] = 1'b1;               // board net unknown
 		pa_i[12] = irq0_sync[1];       // /IRQ0
